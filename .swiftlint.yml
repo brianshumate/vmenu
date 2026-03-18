@@ -1,0 +1,58 @@
+# SwiftLint configuration for vmenu
+
+# Paths to include
+included:
+  - .
+
+# Paths to exclude
+excluded:
+  - .build
+
+# Relax rules for single-file app structure
+file_length:
+  warning: 1500
+  error: 2000
+
+type_body_length:
+  warning: 500
+  error: 700
+
+line_length:
+  warning: 150
+  error: 200
+  ignores_comments: true
+  ignores_urls: true
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25
+
+function_body_length:
+  warning: 60
+  error: 100
+
+# Type name exceptions
+type_name:
+  excluded:
+    - vmenuApp
+
+# Disabled rules
+disabled_rules:
+  - trailing_whitespace      # handled by prek builtin hook
+  - implicit_optional_initialization
+
+# Opt-in rules
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - contains_over_first_not_nil
+  - fatal_error_message
+  - first_where
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - overridden_super_call
+  - private_action
+  - redundant_nil_coalescing
+  - sorted_imports
+  - toggle_bool
+  - unneeded_parentheses_in_closure_argument
