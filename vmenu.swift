@@ -727,6 +727,7 @@ struct MenuRowButton: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .focusable(false)
     .opacity(isEnabled ? 1.0 : 0.4)
     .onHover { hovering in
       isHovered = hovering
@@ -779,6 +780,7 @@ struct EnvCopyRowButton: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .focusable(false)
     .onHover { hovering in
       isHovered = hovering
     }
