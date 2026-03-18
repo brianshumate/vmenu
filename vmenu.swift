@@ -235,7 +235,7 @@ struct VaultStatus {
       ("Storage Type", storageType),
       ("Cluster Name", clusterName),
       ("Cluster ID", clusterId),
-      ("HA Enabled", haEnabled),
+      ("HA Enabled", haEnabled)
     ]
 
     rows = rows.filter { $0.1 != "-" }
@@ -247,7 +247,7 @@ struct VaultStatus {
 
     var lines = [
       "Key" + String(repeating: " ", count: padded - 3) + "Value",
-      "---" + String(repeating: " ", count: padded - 3) + "-----",
+      "---" + String(repeating: " ", count: padded - 3) + "-----"
     ]
 
     for (key, value) in rows {
@@ -575,7 +575,7 @@ class VaultManager: ObservableObject {
       "/opt/homebrew/sbin/vault",
       "/usr/local/sbin/vault",
       "\(home)/.local/bin/vault",  // pipx / user-local
-      "/opt/local/bin/vault",  // MacPorts
+      "/opt/local/bin/vault"  // MacPorts
     ]
 
     for path in candidates where fileManager.isExecutableFile(atPath: path) {
@@ -1408,7 +1408,7 @@ struct StatusPopoverView: View {
 
       LazyVGrid(columns: [
         GridItem(.flexible()),
-        GridItem(.flexible()),
+        GridItem(.flexible())
       ], spacing: 12) {
         StatusItemView(label: "Version", value: status.version, icon: "info.circle")
         StatusItemView(

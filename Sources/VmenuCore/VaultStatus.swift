@@ -131,7 +131,7 @@ public struct VaultStatus: Equatable {
       ("Storage Type", storageType),
       ("Cluster Name", clusterName),
       ("Cluster ID", clusterId),
-      ("HA Enabled", haEnabled),
+      ("HA Enabled", haEnabled)
     ]
 
     // Omit fields that have no value (mirrors vault CLI behavior for
@@ -145,7 +145,7 @@ public struct VaultStatus: Equatable {
 
     var lines = [
       "Key" + String(repeating: " ", count: padded - 3) + "Value",
-      "---" + String(repeating: " ", count: padded - 3) + "-----",
+      "---" + String(repeating: " ", count: padded - 3) + "-----"
     ]
 
     for (key, value) in rows {
