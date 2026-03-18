@@ -79,8 +79,43 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.version }}" vmenu/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.version.outputs.version }}" vmenu/Info.plist
 
-      - name: Build .app bundle
-        run: ./build-app.sh release
+      - name: Import code-signing certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          # Decode certificate
+          echo "$P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          security import "$CERTIFICATE_PATH" \
+            -P "$P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Allow codesign to access the keychain without UI prompt
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add temporary keychain to search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build and sign .app bundle
+        env:
+          CODESIGN_IDENTITY: "Developer ID Application: Brian Shumate"
+        run: ./build-app.sh release sign
 
       - name: Create DMG
         run: |
@@ -92,10 +127,53 @@ jobs:
             -ov -format UDZO \
             "dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg"
 
+      - name: Sign DMG
+        env:
+          CODESIGN_IDENTITY: "Developer ID Application: Brian Shumate"
+        run: |
+          codesign --force --sign "$CODESIGN_IDENTITY" --timestamp \
+            "dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg"
+
       - name: Create zip archive
         run: |
           cd dist/dmg-staging
           zip -r "../vmenu-${{ steps.version.outputs.version }}-macos.zip" vmenu.app
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit \
+            "dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket to the DMG
+          xcrun stapler staple "dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg"
+
+      - name: Notarize zip
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit \
+            "dist/vmenu-${{ steps.version.outputs.version }}-macos.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
