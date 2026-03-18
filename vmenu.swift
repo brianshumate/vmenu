@@ -158,8 +158,8 @@ class VaultManager: ObservableObject {
       let (_, status) = runLaunchctl(["bootout", serviceTarget])
       return status == 0 || status == 3 || status == 113
     } else {
-      let (ok, _) = runLaunchctl(["unload", plistURL.path])
-      return ok
+      let (success, _) = runLaunchctl(["unload", plistURL.path])
+      return success
     }
   }
 
@@ -170,11 +170,11 @@ class VaultManager: ObservableObject {
   @discardableResult
   nonisolated private func bootstrapService() -> Bool {
     if Self.usesModernLaunchctl {
-      let (ok, _) = runLaunchctl(["bootstrap", domainTarget, plistURL.path])
-      return ok
+      let (success, _) = runLaunchctl(["bootstrap", domainTarget, plistURL.path])
+      return success
     } else {
-      let (ok, _) = runLaunchctl(["load", plistURL.path])
-      return ok
+      let (success, _) = runLaunchctl(["load", plistURL.path])
+      return success
     }
   }
 
@@ -185,11 +185,11 @@ class VaultManager: ObservableObject {
   @discardableResult
   nonisolated private func kickstartService() -> Bool {
     if Self.usesModernLaunchctl {
-      let (ok, _) = runLaunchctl(["kickstart", serviceTarget])
-      return ok
+      let (success, _) = runLaunchctl(["kickstart", serviceTarget])
+      return success
     } else {
-      let (ok, _) = runLaunchctl(["start", plistLabel])
-      return ok
+      let (success, _) = runLaunchctl(["start", plistLabel])
+      return success
     }
   }
 
@@ -275,11 +275,11 @@ class VaultManager: ObservableObject {
   /// Legacy fallback:     `launchctl list com.hashicorp.vault`
   nonisolated private func checkVaultStatusSync() -> Bool {
     if Self.usesModernLaunchctl {
-      let (ok, _) = runLaunchctl(["print", serviceTarget])
-      return ok
+      let (success, _) = runLaunchctl(["print", serviceTarget])
+      return success
     } else {
-      let (ok, _) = runLaunchctl(["list", plistLabel])
-      return ok
+      let (success, _) = runLaunchctl(["list", plistLabel])
+      return success
     }
   }
 
@@ -358,8 +358,8 @@ class VaultManager: ObservableObject {
   /// 2. Falling back to a login-shell evaluation of `which vault` so that
   ///    any custom PATH entries still work.
   nonisolated private func findVaultPath() -> String? {
-    let fm = FileManager.default
-    let home = fm.homeDirectoryForCurrentUser.path
+    let fileManager = FileManager.default
+    let home = fileManager.homeDirectoryForCurrentUser.path
 
     // Well-known locations where vault is commonly installed.
     let candidates = [
@@ -369,13 +369,11 @@ class VaultManager: ObservableObject {
       "/opt/homebrew/sbin/vault",
       "/usr/local/sbin/vault",
       "\(home)/.local/bin/vault",                // pipx / user-local
-      "/opt/local/bin/vault",                    // MacPorts
+      "/opt/local/bin/vault"                     // MacPorts
     ]
 
-    for path in candidates {
-      if fm.isExecutableFile(atPath: path) {
-        return path
-      }
+    for path in candidates where fileManager.isExecutableFile(atPath: path) {
+      return path
     }
 
     // Fallback: ask the user's default login shell for the full PATH,
