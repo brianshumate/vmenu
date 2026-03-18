@@ -24,8 +24,10 @@ brew install hashicorp/tap/vault
 
 ## Build the app
 
+Build a production release, and display the path to the binary folder.
+
 ```shell
-swift build
+swift build --show-bin-path -c release
 ```
 
 ## Run the app
