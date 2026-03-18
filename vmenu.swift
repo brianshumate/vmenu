@@ -103,59 +103,88 @@ class VaultManager: ObservableObject {
         "\(domainTarget)/\(plistLabel)"
     }
 
-    /// Bootout (unload) the service. Silently ignores errors when the service
-    /// is not loaded (error 113 / ESRCH / "Could not find specified service").
-    @discardableResult
-    private func bootoutService() -> Bool {
+    /// The major macOS version (e.g. 13 for Ventura, 14 for Sonoma, 15 for
+    /// Sequoia, 26 for Tahoe). Used to choose between modern and legacy
+    /// launchctl subcommands.
+    private static let macOSMajorVersion: Int = {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    }()
+
+    /// Whether the OS supports the modern `bootstrap`/`bootout`/`kickstart`
+    /// subcommands. These were introduced in macOS 10.10 (Yosemite), so all
+    /// versions we target (macOS 13+) support them. However we keep the
+    /// check explicit so the intent is clear and future-proof.
+    private static let usesModernLaunchctl: Bool = {
+        macOSMajorVersion >= 13
+    }()
+
+    // MARK: - launchctl helpers
+
+    /// Run a launchctl subcommand and return (success, terminationStatus).
+    private func runLaunchctl(_ arguments: [String]) -> (Bool, Int32) {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["bootout", serviceTarget]
+        task.arguments = arguments
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
         do {
             try task.run()
             task.waitUntilExit()
-            // 0 = success, 3 = "no such process" (already unloaded) – both OK
-            return task.terminationStatus == 0 || task.terminationStatus == 3
+            return (task.terminationStatus == 0, task.terminationStatus)
         } catch {
-            return false
+            return (false, -1)
+        }
+    }
+
+    /// Bootout (unload) the service. Silently ignores errors when the service
+    /// is not loaded.
+    ///
+    /// Modern (macOS 13+): `launchctl bootout gui/<uid>/com.hashicorp.vault`
+    /// Legacy fallback:     `launchctl unload <plist-path>`
+    ///
+    /// Known acceptable exit codes:
+    ///   0   – success
+    ///   3   – "no such process" (already unloaded)
+    ///   113 – ESRCH / "Could not find specified service"
+    @discardableResult
+    private func bootoutService() -> Bool {
+        if Self.usesModernLaunchctl {
+            let (_, status) = runLaunchctl(["bootout", serviceTarget])
+            return status == 0 || status == 3 || status == 113
+        } else {
+            let (ok, _) = runLaunchctl(["unload", plistURL.path])
+            return ok
         }
     }
 
     /// Bootstrap (load) the service into the current user's GUI domain.
+    ///
+    /// Modern (macOS 13+): `launchctl bootstrap gui/<uid> <plist-path>`
+    /// Legacy fallback:     `launchctl load <plist-path>`
     @discardableResult
     private func bootstrapService() -> Bool {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["bootstrap", domainTarget, plistURL.path]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
-        do {
-            try task.run()
-            task.waitUntilExit()
-            return task.terminationStatus == 0
-        } catch {
-            return false
+        if Self.usesModernLaunchctl {
+            let (ok, _) = runLaunchctl(["bootstrap", domainTarget, plistURL.path])
+            return ok
+        } else {
+            let (ok, _) = runLaunchctl(["load", plistURL.path])
+            return ok
         }
     }
 
     /// Kick-start the service (ensures it is running even without RunAtLoad).
+    ///
+    /// Modern (macOS 13+): `launchctl kickstart gui/<uid>/com.hashicorp.vault`
+    /// Legacy fallback:     `launchctl start com.hashicorp.vault`
     @discardableResult
     private func kickstartService() -> Bool {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["kickstart", serviceTarget]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
-        do {
-            try task.run()
-            task.waitUntilExit()
-            return task.terminationStatus == 0
-        } catch {
-            return false
+        if Self.usesModernLaunchctl {
+            let (ok, _) = runLaunchctl(["kickstart", serviceTarget])
+            return ok
+        } else {
+            let (ok, _) = runLaunchctl(["start", plistLabel])
+            return ok
         }
     }
 
@@ -207,10 +236,10 @@ class VaultManager: ObservableObject {
     }
 
     /* Periodically refresh `vault status` to keep seal state and other details
-     * current. Uses a longer interval (30s) than the launchctl check since it
+     * current. Uses a longer interval (5s) than the launchctl check since it
      * spawns a process and makes an HTTP request to the Vault server.
      */
-    private func startStatusRefreshPolling(interval: TimeInterval = 30) {
+    private func startStatusRefreshPolling(interval: TimeInterval = 5) {
         guard statusRefreshTimer == nil else { return }
         statusRefreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -242,22 +271,17 @@ class VaultManager: ObservableObject {
         }
     }
 
-    // Synchronously check vault launchctl status
+    /// Synchronously check whether the Vault launchd service is loaded.
+    ///
+    /// Modern (macOS 13+): `launchctl print gui/<uid>/com.hashicorp.vault`
+    /// Legacy fallback:     `launchctl list com.hashicorp.vault`
     private func checkVaultStatusSync() -> Bool {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["list", plistLabel]
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            return task.terminationStatus == 0
-        } catch {
-            return false
+        if Self.usesModernLaunchctl {
+            let (ok, _) = runLaunchctl(["print", serviceTarget])
+            return ok
+        } else {
+            let (ok, _) = runLaunchctl(["list", plistLabel])
+            return ok
         }
     }
 
@@ -802,7 +826,7 @@ struct VaultMenuView: View {
                     .foregroundColor(.secondary)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Vault Dev Mode")
+                    Text("Vault dev mode server")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.primary)
                 }
@@ -1093,9 +1117,9 @@ struct StatusPopoverView: View {
                 GridItem(.flexible())
             ], spacing: 12) {
                 StatusItemView(label: "Version", value: status.version, icon: "info.circle")
-                StatusItemView(label: "Storage", value: status.storageType, icon: "internaldrive")
-                StatusItemView(label: "Seal Type", value: status.sealType, icon: "lock.shield")
-                StatusItemView(label: "HA Enabled", value: status.haEnabled, icon: "heart.fill")
+                StatusItemView(label: "Storage", value: status.storageType.capitalized, icon: "internaldrive")
+                StatusItemView(label: "Seal Type", value: status.sealType.capitalized, icon: "lock.shield")
+                StatusItemView(label: "HA Enabled", value: status.haEnabled.capitalized, icon: "heart.fill")
             }
 
             HStack(spacing: 16) {
@@ -1250,7 +1274,7 @@ struct StatusErrorView: View {
 
 struct AboutView: View {
     private let appVersion: String = {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
     }()
 
     private let buildNumber: String = {
@@ -1271,7 +1295,7 @@ struct AboutView: View {
                     .foregroundColor(.secondary)
             }
 
-            Text("A macOS menu bar application for\nmanaging a HashiCorp Vault dev mode server.")
+            Text("A macOS menu bar app for Vault.")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -1281,9 +1305,10 @@ struct AboutView: View {
                 .padding(.horizontal, 40)
 
             VStack(spacing: 4) {
-                Text("Created by Brian Shumate")
+                Text("Made with ❤️ and 🤖 by [Brian Shumate](https://brianshumate.com/)")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.primary)
+                    .tint(.primary)
 
                 Button("GitHub Repository") {
                     if let url = URL(string: "https://github.com/brianshumate/vmenu") {
@@ -1294,7 +1319,7 @@ struct AboutView: View {
                 .font(.system(size: 11))
             }
 
-            Text("© 2025 Brian Shumate. All rights reserved.")
+            Text("MMXXVI.")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
