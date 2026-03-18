@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
   name: "vmenu",
   platforms: [
-    .macOS(.v13),
+    .macOS(.v13)
   ],
   targets: [
     .target(
@@ -27,7 +27,7 @@ let package = Package(
         "Sources",
         "Tests",
         "build-app.sh",
-        "vmenu.app",
+        "vmenu.app"
       ],
       sources: ["vmenu.swift"]
     ),
@@ -35,6 +35,6 @@ let package = Package(
       name: "VmenuCoreTests",
       dependencies: ["VmenuCore"],
       path: "Tests/VmenuCoreTests"
-    ),
+    )
   ]
 )
