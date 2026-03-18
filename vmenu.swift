@@ -511,6 +511,52 @@ class VaultManager: ObservableObject {
     }
 
     private var statusWindow: NSWindow?
+    private var aboutWindow: NSWindow?
+
+    /// Dismiss the MenuBarExtra popover by simulating a mouse-down on its
+    /// parent status-bar button.  Unlike `orderOut(nil)` this properly resets
+    /// the MenuBarExtra's internal open/closed state so the icon only needs a
+    /// single click to reopen the menu afterwards.
+    private func dismissMenuBarExtra() {
+        for window in NSApp.windows {
+            let name = String(describing: type(of: window))
+            guard window.isVisible,
+                  name.contains("StatusBar") || name.contains("MenuBar"),
+                  window.level.rawValue > NSWindow.Level.normal.rawValue
+            else { continue }
+
+            // Use `close()` so the MenuBarExtra's internal state tracks properly
+            window.close()
+            return
+        }
+    }
+
+    func showAboutWindow() {
+        if let existing = aboutWindow {
+            existing.close()
+        }
+
+        // Dismiss MenuBarExtra popover properly
+        dismissMenuBarExtra()
+
+        let contentView = NSHostingView(rootView: AboutView())
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "About vmenu"
+        window.contentView = contentView
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.level = .statusBar
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        aboutWindow = window
+    }
 
     func showStatusWindow() {
         // Close existing status window if open
@@ -518,14 +564,8 @@ class VaultManager: ObservableObject {
             existing.close()
         }
 
-        // Dismiss MenuBarExtra popover so it doesn't cover the status window
-        for window in NSApp.windows where type(of: window) != NSWindow.self {
-            if window.isVisible,
-               window.level.rawValue > NSWindow.Level.normal.rawValue,
-               window.className.contains("StatusBar") || window.className.contains("MenuBar") {
-                window.orderOut(nil)
-            }
-        }
+        // Dismiss MenuBarExtra popover properly
+        dismissMenuBarExtra()
 
         let contentView: NSView
         if let status = parsedStatus {
@@ -949,8 +989,13 @@ struct VaultMenuView: View {
     // MARK: - Quit
 
     private var quitSection: some View {
-        menuButton(title: "Quit vmenu", icon: "power", shortcut: "⌘Q") {
-            NSApplication.shared.terminate(nil)
+        VStack(spacing: 2) {
+            menuButton(title: "About vmenu", icon: "info.circle.fill") {
+                VaultManager.shared.showAboutWindow()
+            }
+            menuButton(title: "Quit vmenu", icon: "power", shortcut: "⌘Q") {
+                NSApplication.shared.terminate(nil)
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)
@@ -1197,6 +1242,62 @@ struct StatusErrorView: View {
         }
         .padding(30)
         .frame(width: 300)
+    }
+}
+
+struct AboutView: View {
+    private let appVersion: String = {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+    }()
+
+    private let buildNumber: String = {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+    }()
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 48))
+                .foregroundColor(.accentColor)
+
+            VStack(spacing: 4) {
+                Text("vmenu")
+                    .font(.system(size: 20, weight: .bold))
+                Text("Version \(appVersion) (\(buildNumber))")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+
+            Text("A macOS menu bar application for\nmanaging a HashiCorp Vault dev mode server.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+
+            Divider()
+                .padding(.horizontal, 40)
+
+            VStack(spacing: 4) {
+                Text("Created by Brian Shumate")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary)
+
+                Button("GitHub Repository") {
+                    if let url = URL(string: "https://github.com/brianshumate/vmenu") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 11))
+            }
+
+            Text("© 2025 Brian Shumate. All rights reserved.")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+        .padding(24)
+        .frame(width: 320)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
