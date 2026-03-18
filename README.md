@@ -113,7 +113,7 @@ The menu bar icon reflects the current server state:
 swift test
 ```
 
-## AI Use Disclaimer
+## AI use disclaimer
 
 This codebase has been built with the support of coding agents.
 
