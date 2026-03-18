@@ -104,9 +104,14 @@ jobs:
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
+      - name: Verify signing identity
+        run: |
+          echo "Available codesigning identities:"
+          security find-identity -v -p codesigning
+
       - name: Build and sign .app bundle
         env:
-          CODESIGN_IDENTITY: "Developer ID Application: Brian Shumate"
+          CODESIGN_IDENTITY: "Developer ID Application: Brian Shumate (${{ secrets.APPLE_TEAM_ID }})"
         run: ./build-app.sh release sign
 
       - name: Create DMG
@@ -121,7 +126,7 @@ jobs:
 
       - name: Sign DMG
         env:
-          CODESIGN_IDENTITY: "Developer ID Application: Brian Shumate"
+          CODESIGN_IDENTITY: "Developer ID Application: Brian Shumate (${{ secrets.APPLE_TEAM_ID }})"
         run: |
           codesign --force --sign "$CODESIGN_IDENTITY" --timestamp \
             "dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg"
