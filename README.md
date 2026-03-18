@@ -4,6 +4,8 @@
 
 A macOS menu bar application for managing a Vault dev mode server.
 
+Requires **macOS 13 (Ventura)** or later — compatible through macOS 26 (Tahoe).
+
 ## Features
 
 - Start/Stop/Restart Vault dev server
@@ -28,6 +30,16 @@ Build a production release, and display the path to the binary folder.
 
 ```shell
 swift build --show-bin-path -c release
+```
+
+### Build the .app bundle
+
+Build a `vmenu.app` bundle with the proper icon and Info.plist for use in
+`/Applications` or the Menu Bar pane in System Preferences.
+
+```shell
+./build-app.sh release
+cp -r vmenu.app /Applications/
 ```
 
 ## Run the app

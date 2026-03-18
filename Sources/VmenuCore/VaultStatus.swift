@@ -64,7 +64,10 @@ public struct VaultStatus: Equatable {
                 continue
             }
 
-            guard let separatorRange = trimmed.range(of: "\\s{2,}", options: .regularExpression) else {
+            guard let separatorRange = trimmed.range(
+                of: "\\s{2,}",
+                options: .regularExpression
+            ) else {
                 continue
             }
 

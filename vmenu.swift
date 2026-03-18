@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 struct VaultStatus {
     var sealType: String = "-"
@@ -35,7 +36,10 @@ struct VaultStatus {
             }
 
             // Split on 2+ consecutive spaces to separate key and value columns
-            guard let separatorRange = trimmed.range(of: "\\s{2,}", options: .regularExpression) else {
+            guard let separatorRange = trimmed.range(
+                of: "\\s{2,}",
+                options: .regularExpression
+            ) else {
                 continue
             }
 
@@ -70,6 +74,7 @@ struct VaultStatus {
     }
 }
 
+@MainActor
 class VaultManager: ObservableObject {
     static let shared = VaultManager()
 
@@ -88,25 +93,25 @@ class VaultManager: ObservableObject {
     }
 
     private let plistLabel = "com.hashicorp.vault"
-    private var plistURL: URL {
+    nonisolated private var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/com.hashicorp.vault.plist")
     }
 
     /// The launchd domain target for the current user, e.g. "gui/501"
-    private var domainTarget: String {
+    nonisolated private var domainTarget: String {
         "gui/\(getuid())"
     }
 
     /// The fully-qualified service target, e.g. "gui/501/com.hashicorp.vault"
-    private var serviceTarget: String {
+    nonisolated private var serviceTarget: String {
         "\(domainTarget)/\(plistLabel)"
     }
 
     /// The major macOS version (e.g. 13 for Ventura, 14 for Sonoma, 15 for
     /// Sequoia, 26 for Tahoe). Used to choose between modern and legacy
     /// launchctl subcommands.
-    private static let macOSMajorVersion: Int = {
+    nonisolated private static let macOSMajorVersion: Int = {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     }()
 
@@ -114,14 +119,14 @@ class VaultManager: ObservableObject {
     /// subcommands. These were introduced in macOS 10.10 (Yosemite), so all
     /// versions we target (macOS 13+) support them. However we keep the
     /// check explicit so the intent is clear and future-proof.
-    private static let usesModernLaunchctl: Bool = {
+    nonisolated private static let usesModernLaunchctl: Bool = {
         macOSMajorVersion >= 13
     }()
 
     // MARK: - launchctl helpers
 
     /// Run a launchctl subcommand and return (success, terminationStatus).
-    private func runLaunchctl(_ arguments: [String]) -> (Bool, Int32) {
+    nonisolated private func runLaunchctl(_ arguments: [String]) -> (Bool, Int32) {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         task.arguments = arguments
@@ -148,7 +153,7 @@ class VaultManager: ObservableObject {
     ///   3   – "no such process" (already unloaded)
     ///   113 – ESRCH / "Could not find specified service"
     @discardableResult
-    private func bootoutService() -> Bool {
+    nonisolated private func bootoutService() -> Bool {
         if Self.usesModernLaunchctl {
             let (_, status) = runLaunchctl(["bootout", serviceTarget])
             return status == 0 || status == 3 || status == 113
@@ -163,7 +168,7 @@ class VaultManager: ObservableObject {
     /// Modern (macOS 13+): `launchctl bootstrap gui/<uid> <plist-path>`
     /// Legacy fallback:     `launchctl load <plist-path>`
     @discardableResult
-    private func bootstrapService() -> Bool {
+    nonisolated private func bootstrapService() -> Bool {
         if Self.usesModernLaunchctl {
             let (ok, _) = runLaunchctl(["bootstrap", domainTarget, plistURL.path])
             return ok
@@ -178,7 +183,7 @@ class VaultManager: ObservableObject {
     /// Modern (macOS 13+): `launchctl kickstart gui/<uid>/com.hashicorp.vault`
     /// Legacy fallback:     `launchctl start com.hashicorp.vault`
     @discardableResult
-    private func kickstartService() -> Bool {
+    nonisolated private func kickstartService() -> Bool {
         if Self.usesModernLaunchctl {
             let (ok, _) = runLaunchctl(["kickstart", serviceTarget])
             return ok
@@ -212,7 +217,10 @@ class VaultManager: ObservableObject {
     // Background timer that periodically checks whether Vault is running
     func startPolling(interval: TimeInterval = 10) {
         guard pollingTimer == nil else { return }
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        pollingTimer = Timer.scheduledTimer(
+            withTimeInterval: interval,
+            repeats: true
+        ) { [weak self] _ in
             guard let self else { return }
             DispatchQueue.global(qos: .utility).async {
                 let running = self.checkVaultStatusSync()
@@ -235,16 +243,20 @@ class VaultManager: ObservableObject {
         startStatusRefreshPolling()
     }
 
-    /* Periodically refresh `vault status` to keep seal state and other details
-     * current. Uses a longer interval (5s) than the launchctl check since it
-     * spawns a process and makes an HTTP request to the Vault server.
-     */
+    // Periodically refresh `vault status` to keep seal state and other details
+    // current. Uses a longer interval (5s) than the launchctl check since it
+    // spawns a process and makes an HTTP request to the Vault server.
     private func startStatusRefreshPolling(interval: TimeInterval = 5) {
         guard statusRefreshTimer == nil else { return }
-        statusRefreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        statusRefreshTimer = Timer.scheduledTimer(
+            withTimeInterval: interval,
+            repeats: true
+        ) { [weak self] _ in
             guard let self else { return }
-            guard self.isRunning, self.isVaultAvailable else { return }
-            self.refreshStatus()
+            MainActor.assumeIsolated {
+                guard self.isRunning, self.isVaultAvailable else { return }
+                self.refreshStatus()
+            }
         }
     }
 
@@ -252,8 +264,8 @@ class VaultManager: ObservableObject {
     private var pollingTimer: Timer?
     private var statusRefreshTimer: Timer?
 
-    // Synchronously check vault availability (safe to call from main thread)
-    private func checkVaultAvailabilitySync() -> Bool {
+    // Synchronously check vault availability (safe to call off the main thread)
+    nonisolated private func checkVaultAvailabilitySync() -> Bool {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         task.arguments = ["vault"]
@@ -275,7 +287,7 @@ class VaultManager: ObservableObject {
     ///
     /// Modern (macOS 13+): `launchctl print gui/<uid>/com.hashicorp.vault`
     /// Legacy fallback:     `launchctl list com.hashicorp.vault`
-    private func checkVaultStatusSync() -> Bool {
+    nonisolated private func checkVaultStatusSync() -> Bool {
         if Self.usesModernLaunchctl {
             let (ok, _) = runLaunchctl(["print", serviceTarget])
             return ok
@@ -295,7 +307,7 @@ class VaultManager: ObservableObject {
     }
 
     // The plist content this app expects
-    private func expectedPlistContent() -> String {
+    nonisolated private func expectedPlistContent() -> String {
         let vaultPath = findVaultPath() ?? "/opt/homebrew/bin/vault"
         return """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -325,12 +337,15 @@ class VaultManager: ObservableObject {
         """
     }
 
-    private func createOrUpdatePlist() {
+    nonisolated private func createOrUpdatePlist() {
         let plistContent = expectedPlistContent()
 
         let launchAgentsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents")
-        try? FileManager.default.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: launchAgentsDir,
+            withIntermediateDirectories: true
+        )
 
         if FileManager.default.fileExists(atPath: plistURL.path) {
             if let existing = try? String(contentsOf: plistURL, encoding: .utf8),
@@ -344,7 +359,7 @@ class VaultManager: ObservableObject {
         try? plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
     }
 
-    private func findVaultPath() -> String? {
+    nonisolated private func findVaultPath() -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         task.arguments = ["vault"]
@@ -393,16 +408,17 @@ class VaultManager: ObservableObject {
                 self.isRunning = true
             }
 
-            /*
-             * Wait for Vault to finish writing its startup log.
-             * If the log is still empty after the initial delay,
-             * retry a few times before giving up.
-             */
+            // Wait for Vault to finish writing its startup log.
+            // If the log is still empty after the initial delay,
+            // retry a few times before giving up.
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
                 var attempts = 0
                 let maxAttempts = 5
                 while attempts < maxAttempts {
-                    let logContent = (try? String(contentsOfFile: "/tmp/vault.startup.log", encoding: .utf8)) ?? ""
+                    let logContent = (try? String(
+                        contentsOfFile: "/tmp/vault.startup.log",
+                        encoding: .utf8
+                    )) ?? ""
                     if logContent.contains("VAULT_ADDR") {
                         break
                     }
@@ -451,9 +467,8 @@ class VaultManager: ObservableObject {
 
         guard let content = try? String(contentsOf: startupLogURL, encoding: .utf8) else { return }
 
-        /* Iterate in reverse so we always pick up the values from the most
-         * recent Vault launch (operational log is appended to across restarts)
-        */
+        // Iterate in reverse so we always pick up the values from the most
+        // recent Vault launch (operational log is appended to across restarts).
         let lines = content.components(separatedBy: .newlines)
         var foundAddr = false
         var foundCACert = false
@@ -476,8 +491,13 @@ class VaultManager: ObservableObject {
         }
     }
 
-    // Run `vault status` off the main thread and return
-    private func runVaultStatus() -> (String, VaultStatus?) {
+    /// Run `vault status` off the main thread and return the raw output plus
+    /// the parsed status.  The caller must supply the current environment
+    /// values so this method can remain `nonisolated`.
+    nonisolated private func runVaultStatus(
+        addr: String,
+        caCert: String
+    ) -> (String, VaultStatus?) {
         guard let vaultPath = findVaultPath() else {
             return ("Could not find vault binary in PATH", nil)
         }
@@ -491,8 +511,8 @@ class VaultManager: ObservableObject {
         task.standardError = pipe
 
         var env = ProcessInfo.processInfo.environment
-        if !vaultAddr.isEmpty { env["VAULT_ADDR"] = vaultAddr }
-        if !vaultCACert.isEmpty { env["VAULT_CACERT"] = vaultCACert }
+        if !addr.isEmpty { env["VAULT_ADDR"] = addr }
+        if !caCert.isEmpty { env["VAULT_CACERT"] = caCert }
         task.environment = env
 
         do {
@@ -511,8 +531,10 @@ class VaultManager: ObservableObject {
         guard isVaultAvailable, isRunning else { return }
 
         isRefreshing = true
+        let addr = vaultAddr
+        let caCert = vaultCACert
         DispatchQueue.global(qos: .userInitiated).async {
-            let (output, parsed) = self.runVaultStatus()
+            let (output, parsed) = self.runVaultStatus(addr: addr, caCert: caCert)
             DispatchQueue.main.async {
                 self.statusOutput = output
                 self.parsedStatus = parsed
@@ -524,8 +546,10 @@ class VaultManager: ObservableObject {
     func fetchStatus() {
         guard isVaultAvailable else { return }
 
+        let addr = vaultAddr
+        let caCert = vaultCACert
         DispatchQueue.global(qos: .userInitiated).async {
-            let (output, parsed) = self.runVaultStatus()
+            let (output, parsed) = self.runVaultStatus(addr: addr, caCert: caCert)
             DispatchQueue.main.async {
                 self.statusOutput = output
                 self.parsedStatus = parsed
@@ -558,6 +582,19 @@ class VaultManager: ObservableObject {
         }
     }
 
+    /// Activate the application, bridging the API change between macOS 13 and 14+.
+    ///
+    /// `NSApplication.activate(ignoringOtherApps:)` was deprecated in macOS 14
+    /// in favour of the parameterless `activate()`. We call the modern API when
+    /// available and fall back to the deprecated variant on macOS 13.
+    private func activateApp() {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     func showAboutWindow() {
         if let existing = aboutWindow {
             existing.close()
@@ -580,7 +617,7 @@ class VaultManager: ObservableObject {
         window.isReleasedWhenClosed = false
         window.level = .statusBar
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
 
         aboutWindow = window
     }
@@ -617,7 +654,7 @@ class VaultManager: ObservableObject {
         window.isReleasedWhenClosed = false
         window.level = .statusBar
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
 
         statusWindow = window
     }
@@ -848,7 +885,11 @@ struct VaultMenuView: View {
                 VStack(spacing: 6) {
                     if let status = vaultManager.parsedStatus {
                         if !vaultManager.vaultAddr.isEmpty {
-                            detailRow(label: "Address", value: vaultManager.vaultAddr, icon: "network")
+                            detailRow(
+                                label: "Address",
+                                value: vaultManager.vaultAddr,
+                                icon: "network"
+                            )
                         }
                         HStack(spacing: 12) {
                             detailPill(label: "v\(status.version)", icon: "tag")
@@ -1030,7 +1071,12 @@ struct VaultMenuView: View {
 
     // MARK: - Helpers
 
-    private func menuButton(title: String, icon: String, shortcut: String? = nil, action: @escaping () -> Void) -> some View {
+    private func menuButton(
+        title: String,
+        icon: String,
+        shortcut: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         MenuRowButton(title: title, icon: icon, shortcut: shortcut, action: action)
     }
 
@@ -1117,15 +1163,35 @@ struct StatusPopoverView: View {
                 GridItem(.flexible())
             ], spacing: 12) {
                 StatusItemView(label: "Version", value: status.version, icon: "info.circle")
-                StatusItemView(label: "Storage", value: status.storageType.capitalized, icon: "internaldrive")
-                StatusItemView(label: "Seal Type", value: status.sealType.capitalized, icon: "lock.shield")
-                StatusItemView(label: "HA Enabled", value: status.haEnabled.capitalized, icon: "heart.fill")
+                StatusItemView(
+                    label: "Storage",
+                    value: status.storageType.capitalized,
+                    icon: "internaldrive"
+                )
+                StatusItemView(
+                    label: "Seal Type",
+                    value: status.sealType.capitalized,
+                    icon: "lock.shield"
+                )
+                StatusItemView(
+                    label: "HA Enabled",
+                    value: status.haEnabled.capitalized,
+                    icon: "heart.fill"
+                )
             }
 
             HStack(spacing: 16) {
-                StatusItemView(label: "Initialized", value: status.initialized.capitalized, icon: "checkmark.circle")
+                StatusItemView(
+                    label: "Initialized",
+                    value: status.initialized.capitalized,
+                    icon: "checkmark.circle"
+                )
                 StatusItemView(label: "Key Shares", value: status.totalShares, icon: "number")
-                StatusItemView(label: "Key Threshold", value: status.threshold, icon: "slider.horizontal.3")
+                StatusItemView(
+                    label: "Key Threshold",
+                    value: status.threshold,
+                    icon: "slider.horizontal.3"
+                )
             }
         }
     }
@@ -1368,10 +1434,10 @@ private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSIma
         return path
     }
 
-    // Menu bar icon color.
+    // Menu bar icon – stroke adapts to light/dark appearance.
     let composite = NSImage(size: size, flipped: false) { rect in
         let path = trianglePath(in: rect)
-        NSColor.white.setStroke()
+        NSColor.labelColor.setStroke()
         path.stroke()
 
         let dotRadius: CGFloat = 2.5
@@ -1396,9 +1462,9 @@ private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSIma
 
 // MARK: - NSView helper to locate the NSStatusBarButton inside a status-bar window
 
-private extension NSView {
+extension NSView {
     /// Recursively search the view hierarchy for an NSStatusBarButton.
-    func findStatusBarButton() -> NSStatusBarButton? {
+    fileprivate func findStatusBarButton() -> NSStatusBarButton? {
         if let button = self as? NSStatusBarButton {
             return button
         }
@@ -1411,15 +1477,223 @@ private extension NSView {
     }
 }
 
+// MARK: - Menu bar visibility monitor
+
+/// Monitors whether vmenu's status bar icon is visible on the menu bar.
+///
+/// macOS can hide menu bar extras when the menu bar is too crowded (e.g. on
+/// MacBooks with a notch). This class periodically checks the underlying
+/// `NSStatusBarWindow` and fires a local notification if the icon has been
+/// hidden by the OS.
+@MainActor
+class MenuBarVisibilityMonitor {
+    static let shared = MenuBarVisibilityMonitor()
+
+    /// Whether the icon was visible on the last check.
+    private var wasVisible = true
+
+    /// Avoid spamming notifications — only notify once per hide event.
+    private var hasNotifiedHidden = false
+
+    private var timer: Timer?
+
+    /// Start periodic visibility checks.
+    func startMonitoring(interval: TimeInterval = 5) {
+        guard timer == nil else { return }
+        // Brief delay so the MenuBarExtra has time to install its status item.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.checkVisibility()
+                self?.timer = Timer.scheduledTimer(
+                    withTimeInterval: interval,
+                    repeats: true
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.checkVisibility()
+                    }
+                }
+            }
+        }
+    }
+
+    func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    /// Find the `NSStatusBarWindow` that hosts vmenu's status item button and
+    /// determine whether it is actually on-screen.
+    private func checkVisibility() {
+        let isVisible = findStatusBarWindowVisible()
+
+        if wasVisible && !isVisible {
+            // Transitioned from visible → hidden
+            if !hasNotifiedHidden {
+                hasNotifiedHidden = true
+                sendHiddenNotification()
+            }
+        } else if !wasVisible && isVisible {
+            // Transitioned from hidden → visible
+            hasNotifiedHidden = false
+        }
+
+        wasVisible = isVisible
+    }
+
+    /// Walk `NSApp.windows` to locate the status-bar window that contains our
+    /// `NSStatusBarButton`, then check whether that window is actually
+    /// on-screen within visible display bounds.
+    private func findStatusBarWindowVisible() -> Bool {
+        // The status bar button lives in a small system-managed window whose
+        // class name is NSStatusBarWindow. If we can't find it at all, assume
+        // visible (the MenuBarExtra may not have been installed yet).
+        for window in NSApp.windows {
+            guard window.contentView?.findStatusBarButton() != nil else { continue }
+
+            // The window must be visible and ordered on screen.
+            guard window.isVisible, window.occlusionState.contains(.visible) else {
+                return false
+            }
+
+            // Check that the window's frame intersects with at least one
+            // screen's visible area. When the OS hides the icon, the window
+            // may be pushed offscreen or have a zero-width frame.
+            let frame = window.frame
+            if frame.width < 1 || frame.height < 1 {
+                return false
+            }
+
+            let onAnyScreen = NSScreen.screens.contains { screen in
+                screen.frame.intersects(frame)
+            }
+            return onAnyScreen
+        }
+
+        // Could not find the status bar window — assume visible (startup race).
+        return true
+    }
+
+    /// Whether we are running inside a proper app bundle **and** were launched
+    /// through LaunchServices (e.g. `open vmenu.app`).
+    ///
+    /// `UNUserNotificationCenter` requires both a valid `bundleIdentifier` and
+    /// a properly registered launch context.  When the binary is executed
+    /// directly from the terminal (even inside a .app bundle), the framework
+    /// throws an uncatchable `NSInternalInconsistencyException`.
+    ///
+    /// We combine the bundle-identifier check with a LaunchServices-based
+    /// heuristic: if the running app can be found via `NSRunningApplication`
+    /// with a non-empty `bundleURL` that points to a .app wrapper, it was
+    /// launched properly.
+    private static let hasAppBundle: Bool = {
+        guard Bundle.main.bundleIdentifier != nil else { return false }
+        // Verify the process was launched through LaunchServices by checking
+        // that our bundle URL ends with ".app" (i.e. we are inside a real
+        // app bundle, not a bare executable).
+        guard Bundle.main.bundlePath.hasSuffix(".app") else { return false }
+        // Additional check: NSRunningApplication should know about us with
+        // an activation policy other than "prohibited" if we were launched
+        // via LaunchServices.
+        return NSRunningApplication.current.activationPolicy != .prohibited
+    }()
+
+    /// Safely obtain the `UNUserNotificationCenter`.  Returns `nil` when
+    /// the call would throw an Objective-C exception (e.g. missing bundle
+    /// proxy).
+    private static func notificationCenter() -> UNUserNotificationCenter? {
+        guard hasAppBundle else { return nil }
+        // UNUserNotificationCenter.current() can throw an
+        // NSInternalInconsistencyException that Swift cannot catch.
+        // The hasAppBundle guard above should prevent this, but as an
+        // extra safety net we mark this clearly.
+        return UNUserNotificationCenter.current()
+    }
+
+    private func sendHiddenNotification() {
+        guard let center = Self.notificationCenter() else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "vmenu Icon Hidden"
+        content.body = "Your vmenu menu bar icon is currently hidden "
+            + "by macOS. Try closing other menu bar apps or "
+            + "rearranging icons to make it visible again."
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "vmenu-icon-hidden-\(UUID().uuidString)",
+            content: content,
+            trigger: nil // Deliver immediately
+        )
+
+        center.add(request) { error in
+            if let error {
+                print(
+                    "Failed to deliver menu bar visibility "
+                    + "notification: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    /// Request notification permission. Call once at app startup.
+    func requestNotificationPermission() {
+        guard let center = Self.notificationCenter() else { return }
+
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                print("Notification permission error: \(error.localizedDescription)")
+            }
+            if !granted {
+                print(
+                    "vmenu: Notification permission not granted "
+                    + "— menu bar visibility alerts will be silent."
+                )
+            }
+        }
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard ensureSingleInstance() else { return }
         VaultManager.shared.performInitialCheck()
         VaultManager.shared.startPolling()
+
+        // Request notification permission and start monitoring menu bar
+        // icon visibility so the user is alerted when macOS hides the icon.
+        MenuBarVisibilityMonitor.shared.requestNotificationPermission()
+        MenuBarVisibilityMonitor.shared.startMonitoring()
+    }
+
+    /// Returns `true` if this is the only running instance. If another
+    /// instance is already running, shows an alert and terminates the app.
+    private func ensureSingleInstance() -> Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return true }
+
+        let runningInstances = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleID
+        )
+
+        // More than one means us + an already-running instance
+        if runningInstances.count > 1 {
+            let alert = NSAlert()
+            alert.messageText = "vmenu is already running"
+            alert.informativeText = "Another instance of vmenu is "
+                + "active in the menu bar. Only one instance "
+                + "can run at a time."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            NSApp.terminate(nil)
+            return false
+        }
+
+        return true
     }
 }
 
 @main
-struct vmenuApp: App {
+struct VmenuApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @ObservedObject private var vaultManager = VaultManager.shared
 

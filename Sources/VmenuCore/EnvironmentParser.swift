@@ -32,7 +32,9 @@ public func parseEnvironmentVariables(from content: String) -> VaultEnvironment 
         if !foundCACert, line.contains("export VAULT_CACERT=") {
             if let range = line.range(of: "export VAULT_CACERT=") {
                 let cert = String(line[range.upperBound...])
-                result.vaultCACert = cert.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\n"))
+                result.vaultCACert = cert.trimmingCharacters(
+                    in: CharacterSet(charactersIn: "\"'\n")
+                )
                 foundCACert = true
             }
         }

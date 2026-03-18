@@ -20,9 +20,13 @@ let package = Package(
                 "LICENSE",
                 "README.md",
                 "prek.toml",
+                "share",
                 "vmenu/Info.plist",
+                "vmenu/AppIcon.icns",
                 "Sources",
-                "Tests"
+                "Tests",
+                "build-app.sh",
+                "vmenu.app",
             ],
             sources: ["vmenu.swift"]
         ),
