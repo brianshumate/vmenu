@@ -1481,11 +1481,11 @@ struct StatusErrorView: View {
 
 struct AboutView: View {
   private let appVersion: String = {
-    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3"
   }()
 
   private let buildNumber: String = {
-    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.1"
+    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.3"
   }()
 
   var body: some View {
@@ -1497,7 +1497,7 @@ struct AboutView: View {
       VStack(spacing: 4) {
         Text("vmenu")
           .font(.system(size: 20, weight: .bold))
-        Text("Version \(appVersion) (\(buildNumber))")
+        Text("Version \(appVersion)" + (buildNumber != appVersion ? " (\(buildNumber))" : ""))
           .font(.system(size: 12))
           .foregroundColor(.secondary)
       }
