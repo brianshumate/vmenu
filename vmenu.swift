@@ -1340,11 +1340,11 @@ struct StatusErrorView: View {
 
 struct AboutView: View {
     private let appVersion: String = {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
     }()
 
     private let buildNumber: String = {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.1"
     }()
 
     var body: some View {
