@@ -11,6 +11,12 @@ let package = Package(
             name: "vmenu",
             dependencies: [],
             path: ".",
+            exclude: [
+                "LICENSE",
+                "README.md",
+                "prek.toml",
+                "vmenu/Info.plist"
+            ],
             sources: ["vmenu.swift"]
         )
     ]
