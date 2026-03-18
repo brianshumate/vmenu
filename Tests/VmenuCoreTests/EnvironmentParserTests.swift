@@ -40,53 +40,65 @@ final class EnvironmentParserTests: XCTestCase {
 
     XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
     XCTAssertEqual(env.vaultCACert, "/var/folders/ab/cd/T/vault-tls12345/vault-ca.pem")
+    XCTAssertEqual(env.vaultToken, "root")
+    XCTAssertEqual(env.unsealKey, "abc123def456")
   }
 
   func testParseDoubleQuotedValues() {
     let log = """
       export VAULT_ADDR="https://127.0.0.1:8200"
       export VAULT_CACERT="/tmp/vault-ca.pem"
+    Root Token: s.abcdef123456
     """
 
     let env = parseEnvironmentVariables(from: log)
 
     XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
     XCTAssertEqual(env.vaultCACert, "/tmp/vault-ca.pem")
+    XCTAssertEqual(env.vaultToken, "s.abcdef123456")
   }
 
   func testParseSingleQuotedValues() {
     let log = """
       export VAULT_ADDR='https://127.0.0.1:8200'
       export VAULT_CACERT='/tmp/vault-ca.pem'
+    Root Token: root
     """
 
     let env = parseEnvironmentVariables(from: log)
 
     XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
     XCTAssertEqual(env.vaultCACert, "/tmp/vault-ca.pem")
+    XCTAssertEqual(env.vaultToken, "root")
   }
 
   func testParseUnquotedValues() {
     let log = """
       export VAULT_ADDR=https://127.0.0.1:8200
       export VAULT_CACERT=/tmp/vault-ca.pem
+    Root Token: root
     """
 
     let env = parseEnvironmentVariables(from: log)
 
     XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
     XCTAssertEqual(env.vaultCACert, "/tmp/vault-ca.pem")
+    XCTAssertEqual(env.vaultToken, "root")
   }
 
   func testPicksMostRecentValuesFromMultipleRuns() {
     let log = """
       export VAULT_ADDR='https://127.0.0.1:8200'
       export VAULT_CACERT='/tmp/old-cert.pem'
+    Unseal Key: oldkey123
+    Root Token: old-token
 
     Vault restarted...
 
       export VAULT_ADDR='https://127.0.0.1:8201'
       export VAULT_CACERT='/tmp/new-cert.pem'
+    Unseal Key: newkey456
+    Root Token: new-token
     """
 
     let env = parseEnvironmentVariables(from: log)
@@ -94,6 +106,8 @@ final class EnvironmentParserTests: XCTestCase {
     // Should pick the latest (last) values since it iterates in reverse
     XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8201")
     XCTAssertEqual(env.vaultCACert, "/tmp/new-cert.pem")
+    XCTAssertEqual(env.vaultToken, "new-token")
+    XCTAssertEqual(env.unsealKey, "newkey456")
   }
 
   func testParseOnlyAddr() {
@@ -105,6 +119,7 @@ final class EnvironmentParserTests: XCTestCase {
 
     XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
     XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "")
   }
 
   func testParseOnlyCACert() {
@@ -116,6 +131,33 @@ final class EnvironmentParserTests: XCTestCase {
 
     XCTAssertEqual(env.vaultAddr, "")
     XCTAssertEqual(env.vaultCACert, "/tmp/vault-ca.pem")
+    XCTAssertEqual(env.vaultToken, "")
+  }
+
+  func testParseOnlyToken() {
+    let log = """
+    Root Token: hvs.some-long-token
+    """
+
+    let env = parseEnvironmentVariables(from: log)
+
+    XCTAssertEqual(env.vaultAddr, "")
+    XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "hvs.some-long-token")
+    XCTAssertEqual(env.unsealKey, "")
+  }
+
+  func testParseOnlyUnsealKey() {
+    let log = """
+    Unseal Key: GDz8cL2gACZJAByboalN3e0BFpqAmwNCJ3Tve5Evac0=
+    """
+
+    let env = parseEnvironmentVariables(from: log)
+
+    XCTAssertEqual(env.vaultAddr, "")
+    XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "")
+    XCTAssertEqual(env.unsealKey, "GDz8cL2gACZJAByboalN3e0BFpqAmwNCJ3Tve5Evac0=")
   }
 
   func testEmptyString() {
@@ -123,6 +165,8 @@ final class EnvironmentParserTests: XCTestCase {
 
     XCTAssertEqual(env.vaultAddr, "")
     XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "")
+    XCTAssertEqual(env.unsealKey, "")
   }
 
   func testNoExportLines() {
@@ -136,6 +180,8 @@ final class EnvironmentParserTests: XCTestCase {
 
     XCTAssertEqual(env.vaultAddr, "")
     XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "")
+    XCTAssertEqual(env.unsealKey, "")
   }
 
   func testExportWithEmptyValue() {
@@ -148,6 +194,8 @@ final class EnvironmentParserTests: XCTestCase {
 
     XCTAssertEqual(env.vaultAddr, "")
     XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "")
+    XCTAssertEqual(env.unsealKey, "")
   }
 
   func testExportOnDifferentPort() {
@@ -176,17 +224,41 @@ final class EnvironmentParserTests: XCTestCase {
     let env = VaultEnvironment()
     XCTAssertEqual(env.vaultAddr, "")
     XCTAssertEqual(env.vaultCACert, "")
+    XCTAssertEqual(env.vaultToken, "")
+    XCTAssertEqual(env.unsealKey, "")
   }
 
   func testVaultEnvironmentEquality() {
-    let lhs = VaultEnvironment(vaultAddr: "https://localhost:8200", vaultCACert: "/tmp/ca.pem")
-    let rhs = VaultEnvironment(vaultAddr: "https://localhost:8200", vaultCACert: "/tmp/ca.pem")
+    let lhs = VaultEnvironment(
+      vaultAddr: "https://localhost:8200",
+      vaultCACert: "/tmp/ca.pem",
+      vaultToken: "root",
+      unsealKey: "abc123"
+    )
+    let rhs = VaultEnvironment(
+      vaultAddr: "https://localhost:8200",
+      vaultCACert: "/tmp/ca.pem",
+      vaultToken: "root",
+      unsealKey: "abc123"
+    )
     XCTAssertEqual(lhs, rhs)
   }
 
   func testVaultEnvironmentInequality() {
     let lhs = VaultEnvironment(vaultAddr: "https://localhost:8200")
     let rhs = VaultEnvironment(vaultAddr: "https://localhost:8201")
+    XCTAssertNotEqual(lhs, rhs)
+  }
+
+  func testVaultEnvironmentTokenInequality() {
+    let lhs = VaultEnvironment(vaultToken: "root")
+    let rhs = VaultEnvironment(vaultToken: "other-token")
+    XCTAssertNotEqual(lhs, rhs)
+  }
+
+  func testVaultEnvironmentUnsealKeyInequality() {
+    let lhs = VaultEnvironment(unsealKey: "key1")
+    let rhs = VaultEnvironment(unsealKey: "key2")
     XCTAssertNotEqual(lhs, rhs)
   }
 }
