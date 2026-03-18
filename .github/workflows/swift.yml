@@ -53,6 +53,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Extract version from commit message
         id: version
@@ -65,15 +67,35 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build release binary
-        run: swift build -c release
-
-      - name: Package binary
+      - name: Create and push git tag
         run: |
-          BINARY_PATH=$(swift build -c release --show-bin-path)/vmenu
-          mkdir -p dist
-          cp "$BINARY_PATH" dist/vmenu
-          cd dist && tar czf vmenu-macos-${{ steps.version.outputs.version }}.tar.gz vmenu
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Stamp version in Info.plist
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.version }}" vmenu/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.version.outputs.version }}" vmenu/Info.plist
+
+      - name: Build .app bundle
+        run: ./build-app.sh release
+
+      - name: Create DMG
+        run: |
+          mkdir -p dist/dmg-staging
+          cp -R vmenu.app dist/dmg-staging/
+          ln -s /Applications dist/dmg-staging/Applications
+          hdiutil create -volname "vmenu" \
+            -srcfolder dist/dmg-staging \
+            -ov -format UDZO \
+            "dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg"
+
+      - name: Create zip archive
+        run: |
+          cd dist/dmg-staging
+          zip -r "../vmenu-${{ steps.version.outputs.version }}-macos.zip" vmenu.app
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -81,4 +103,6 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: vmenu ${{ steps.version.outputs.tag }}
           generate_release_notes: true
-          files: dist/vmenu-macos-${{ steps.version.outputs.version }}.tar.gz
+          files: |
+            dist/vmenu-${{ steps.version.outputs.version }}-macos.dmg
+            dist/vmenu-${{ steps.version.outputs.version }}-macos.zip

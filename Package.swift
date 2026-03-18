@@ -23,6 +23,7 @@ let package = Package(
                 "share",
                 "vmenu/Info.plist",
                 "vmenu/AppIcon.icns",
+                "vmenu/vmenu.entitlements",
                 "Sources",
                 "Tests",
                 "build-app.sh",

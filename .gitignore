@@ -65,6 +65,7 @@ fastlane/test_output
 
 # Build artifacts
 vmenu.app/
+dist/
 
 # agent tooling
 .pi/
