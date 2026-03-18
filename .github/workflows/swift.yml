@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
 
@@ -48,7 +50,7 @@ jobs:
     name: Create Release
     needs: [lint, build, test]
     runs-on: macos-15
-    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -56,23 +58,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extract version from commit message
+      - name: Extract version from tag
         id: version
         run: |
-          VERSION=$(echo "${{ github.event.head_commit.message }}" | sed -En 's/^release: *v?(.*)/\1/p')
-          if [ -z "$VERSION" ]; then
-            echo "No version found in commit message"
-            exit 1
-          fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Create and push git tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Stamp version in Info.plist
         run: |
