@@ -1,77 +1,74 @@
-# vmenu
+<p align="center">
+  <img src="share/screenshot-vmenu-running-alt.png" alt="vmenu running in the macOS menu bar" width="580">
+</p>
 
-![CI](https://github.com/brianshumate/vmenu/actions/workflows/swift.yml/badge.svg)
+<h1 align="center">vmenu</h1>
 
-**vmenu** is a macOS menu bar application for managing a Vault dev mode server.
+<p align="center">
+  <strong>A native macOS menu bar app for managing HashiCorp Vault dev servers</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/brianshumate/vmenu/actions/workflows/swift.yml"><img src="https://github.com/brianshumate/vmenu/actions/workflows/swift.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/brianshumate/vmenu/releases/latest"><img src="https://img.shields.io/github/v/release/brianshumate/vmenu?label=release&color=blue" alt="Latest Release"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey?logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white" alt="Swift 5.9">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/brianshumate/vmenu" alt="License"></a>
+</p>
+
+---
+
+**vmenu** lives in your menu bar and gives you one-click control over a [Vault](https://www.vaultproject.io/) dev mode server. Start, stop, restart, check status, and copy environment variables — without ever opening a terminal.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><strong>Running</strong></td>
+    <td align="center"><strong>Stopped</strong></td>
+  </tr>
+  <tr>
+    <td><img src="share/screenshot-vmenu-running.png" alt="vmenu with Vault running" width="400"></td>
+    <td><img src="share/screenshot-vmenu-stopped.png" alt="vmenu with Vault stopped" width="400"></td>
+  </tr>
+</table>
 
 ## Features
 
-- Start/stop/restart Vault dev mode server process with `launchd`.
-- Live status polling with sealed/unsealed/stopped indicator in menu bar icon.
-- Copy `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` full `export` command lines to clipboard.
-- View server status, with raw status output and server unseal key.
-- Notification is macOS hides the menu bar icon due to crowding.
+- **Start / Stop / Restart** a Vault dev server with a click or keyboard shortcut
+- **Live status indicator** — green (unsealed), orange (sealed), red (stopped)
+- **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands
+- **Server info at a glance** — version, seal status, storage backend, address
+- **macOS-native** — pure SwiftUI, lightweight, no Electron, no runtime dependencies
+- **launchd integration** — manages Vault through a proper LaunchAgent
+- **Keyboard shortcuts** for every action (⌘S, ⌘R, ⌘I, ⌘Q)
 
-## Prerequisites
+## Install
 
-- [Vault](https://www.vaultproject.io/) binary installed and in your PATH
+### Download a release (recommended)
 
-> [!TIP]
-> vmenu requires **macOS 13 (Ventura)** or later through macOS 26 (Tahoe).
+Grab the latest DMG or zip from [**Releases**](https://github.com/brianshumate/vmenu/releases/latest), open the DMG, and drag `vmenu.app` into `/Applications`.
 
-### Install Vault binary
+> [!NOTE]
+> Release builds from GitHub Actions are signed and notarized.
+> If macOS still shows a Gatekeeper warning, right-click the app and choose **Open**, or go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
-You can install the `vault` binary with Homebrew.
-
-```shell
-brew install hashicorp/tap/vault
-```
-
-You can also download Vault binaries from [releases.hashicorp.com](https://releases.hashicorp.com/vault), and manually install the binary someplace in your system PATH.
-
-## Install from release
-
-Download the latest DMG or zip from
-[Releases](https://github.com/brianshumate/vmenu/releases), then drag
-`vmenu.app` into `/Applications`.
-
-> [!NOTE] Release builds from GitHub Actions are ad-hoc signed.
-> On first launch macOS may show "vmenu can't be opened because Apple cannot
-> check it for malicious software." Right-click the app and choose **Open**,
-> or go to **System Settings → Privacy & Security** and click **Open Anyway**.
-
-## Build from source
-
-### Quick run (debug)
+### Build from source
 
 ```shell
+# Run in debug mode
 swift run
-```
 
-### Build a release binary
-
-```shell
+# Build a release binary
 swift build -c release
-```
 
-The binary is written to the path shown by `swift build --show-bin-path -c release`.
-
-### Build the .app bundle
-
-The `build-app.sh` script compiles the binary, assembles a complete
-`.app` bundle with icon and Info.plist, stamps the version from the
-latest git tag, and code-signs the result.
-
-```shell
-# Ad-hoc signed — good for local use
+# Build and ad-hoc sign a full .app bundle
 ./build-app.sh release
-
-# Install
 cp -r vmenu.app /Applications/
 ```
 
-To produce a build signed with your Developer ID (required for
-notarization and Gatekeeper-friendly distribution):
+<details>
+<summary><strong>Developer ID signing (for distribution)</strong></summary>
 
 ```shell
 # Uses the first "Developer ID Application" identity in your keychain
@@ -81,34 +78,44 @@ notarization and Gatekeeper-friendly distribution):
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build-app.sh release sign
 ```
 
-### Version stamping
+The build script reads the latest git tag (e.g. `v1.5`) and stamps it into `CFBundleShortVersionString` and `CFBundleVersion`. If no tag exists, the version defaults to the value already in `vmenu/Info.plist`.
 
-The build script reads the latest git tag (e.g. `v1.2`) and writes it
-into the bundle's `CFBundleShortVersionString` and `CFBundleVersion`.
-If no tag exists the version defaults to the value in `vmenu/Info.plist`.
+</details>
+
+## Prerequisites
+
+vmenu needs the `vault` binary installed and available in your `PATH`.
+
+```shell
+brew install hashicorp/tap/vault
+```
+
+Or download binaries directly from [releases.hashicorp.com/vault](https://releases.hashicorp.com/vault).
+
+> [!TIP]
+> vmenu requires **macOS 13 (Ventura)** or later through macOS 26 (Tahoe).
 
 ## How it works
 
-vmenu is a menu bar–only app (`LSUIElement = true`) — it has no Dock icon
-and no main window. It manages the Vault dev server through a launchd
-LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`,
-using modern `launchctl bootstrap`/`bootout`/`kickstart` subcommands on
-macOS 13+.
+vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main window. It manages the Vault dev server through a launchd LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` subcommands.
 
-Click the menu bar icon to access server controls. The icon color reflects
-the current state:
+The menu bar icon reflects the current server state:
 
-| Color  | Meaning             |
-|--------|---------------------|
-| Green  | Vault is unsealed   |
-| Orange | Vault is sealed     |
-| Red    | Vault is stopped    |
+| Icon color | State |
+|---|---|
+| 🟢 Green | Vault is unsealed and ready |
+| 🟠 Orange | Vault is sealed |
+| 🔴 Red | Vault is stopped |
 
 ## Running tests
 
 ```shell
 swift test
 ```
+
+## Contributing
+
+Contributions are welcome! Please open an issue or pull request.
 
 ## License
 
