@@ -16,7 +16,16 @@ struct VaultStatus {
 
     static func parse(from output: String) -> VaultStatus {
         var status = VaultStatus()
+        let pairs = parseKeyValuePairs(from: output)
+        for (key, value) in pairs {
+            applyField(key: key, value: value, to: &status)
+        }
+        return status
+    }
+
+    private static func parseKeyValuePairs(from output: String) -> [(String, String)] {
         let lines = output.components(separatedBy: .newlines)
+        var pairs: [(String, String)] = []
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -35,25 +44,29 @@ struct VaultStatus {
             let value = String(trimmed[separatorRange.upperBound...])
                 .trimmingCharacters(in: .whitespaces)
 
-            guard !key.isEmpty, !value.isEmpty else { continue }
-
-            switch key {
-            case "Seal Type": status.sealType = value
-            case "Initialized": status.initialized = value
-            case "Sealed": status.sealed = value
-            case "Total Shares": status.totalShares = value
-            case "Threshold": status.threshold = value
-            case "Version": status.version = value
-            case "Build Date": status.buildDate = value
-            case "Storage Type": status.storageType = value
-            case "Cluster Name": status.clusterName = value
-            case "Cluster ID": status.clusterId = value
-            case "HA Enabled": status.haEnabled = value
-            default: break
+            if !key.isEmpty, !value.isEmpty {
+                pairs.append((key, value))
             }
         }
 
-        return status
+        return pairs
+    }
+
+    private static func applyField(key: String, value: String, to status: inout VaultStatus) {
+        switch key {
+        case "Seal Type": status.sealType = value
+        case "Initialized": status.initialized = value
+        case "Sealed": status.sealed = value
+        case "Total Shares": status.totalShares = value
+        case "Threshold": status.threshold = value
+        case "Version": status.version = value
+        case "Build Date": status.buildDate = value
+        case "Storage Type": status.storageType = value
+        case "Cluster Name": status.clusterName = value
+        case "Cluster ID": status.clusterId = value
+        case "HA Enabled": status.haEnabled = value
+        default: break
+        }
     }
 }
 
@@ -704,7 +717,9 @@ struct VaultMenuView: View {
                 )
 
             Button("Download from HashiCorp") {
-                NSWorkspace.shared.open(URL(string: "https://developer.hashicorp.com/vault/tutorials/getting-started/getting-started-install")!)
+                if let url = URL(string: "https://developer.hashicorp.com/vault/tutorials/getting-started/getting-started-install") {
+                    NSWorkspace.shared.open(url)
+                }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
