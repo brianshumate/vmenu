@@ -513,20 +513,23 @@ class VaultManager: ObservableObject {
     private var statusWindow: NSWindow?
     private var aboutWindow: NSWindow?
 
-    /// Dismiss the MenuBarExtra popover by simulating a mouse-down on its
-    /// parent status-bar button.  Unlike `orderOut(nil)` this properly resets
-    /// the MenuBarExtra's internal open/closed state so the icon only needs a
-    /// single click to reopen the menu afterwards.
+    /// Dismiss the MenuBarExtra popover so the status-bar icon remains
+    /// clickable afterwards.
+    ///
+    /// On macOS 26, calling `close()` or `orderOut(nil)` on the popover
+    /// window leaves the MenuBarExtra's internal toggle state out of sync —
+    /// subsequent clicks on the icon do nothing.  The correct fix is to
+    /// simulate a click on the `NSStatusBarButton` that owns the popover,
+    /// which goes through AppKit's normal state machine and properly marks
+    /// the popover as dismissed.
     private func dismissMenuBarExtra() {
+        // The NSStatusBarButton lives inside a small system-owned
+        // NSStatusBarWindow (always present in NSApp.windows).
         for window in NSApp.windows {
-            let name = String(describing: type(of: window))
-            guard window.isVisible,
-                  name.contains("StatusBar") || name.contains("MenuBar"),
-                  window.level.rawValue > NSWindow.Level.normal.rawValue
-            else { continue }
-
-            // Use `close()` so the MenuBarExtra's internal state tracks properly
-            window.close()
+            guard let button = window.contentView?.findStatusBarButton() else {
+                continue
+            }
+            button.performClick(nil)
             return
         }
     }
@@ -1364,6 +1367,23 @@ private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSIma
     }
     composite.isTemplate = false
     return composite
+}
+
+// MARK: - NSView helper to locate the NSStatusBarButton inside a status-bar window
+
+private extension NSView {
+    /// Recursively search the view hierarchy for an NSStatusBarButton.
+    func findStatusBarButton() -> NSStatusBarButton? {
+        if let button = self as? NSStatusBarButton {
+            return button
+        }
+        for subview in subviews {
+            if let found = subview.findStatusBarButton() {
+                return found
+            }
+        }
+        return nil
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
