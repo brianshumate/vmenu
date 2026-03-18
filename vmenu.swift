@@ -93,6 +93,72 @@ class VaultManager: ObservableObject {
             .appendingPathComponent("Library/LaunchAgents/com.hashicorp.vault.plist")
     }
 
+    /// The launchd domain target for the current user, e.g. "gui/501"
+    private var domainTarget: String {
+        "gui/\(getuid())"
+    }
+
+    /// The fully-qualified service target, e.g. "gui/501/com.hashicorp.vault"
+    private var serviceTarget: String {
+        "\(domainTarget)/\(plistLabel)"
+    }
+
+    /// Bootout (unload) the service. Silently ignores errors when the service
+    /// is not loaded (error 113 / ESRCH / "Could not find specified service").
+    @discardableResult
+    private func bootoutService() -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["bootout", serviceTarget]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            // 0 = success, 3 = "no such process" (already unloaded) – both OK
+            return task.terminationStatus == 0 || task.terminationStatus == 3
+        } catch {
+            return false
+        }
+    }
+
+    /// Bootstrap (load) the service into the current user's GUI domain.
+    @discardableResult
+    private func bootstrapService() -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["bootstrap", domainTarget, plistURL.path]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Kick-start the service (ensures it is running even without RunAtLoad).
+    @discardableResult
+    private func kickstartService() -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["kickstart", serviceTarget]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
     init() {
         // Defer all process work to avoid re-entrant run loop
     }
@@ -247,11 +313,8 @@ class VaultManager: ObservableObject {
                existing == plistContent {
                 return  // plist is already up to date
             }
-            let unloadTask = Process()
-            unloadTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            unloadTask.arguments = ["unload", plistURL.path]
-            try? unloadTask.run()
-            unloadTask.waitUntilExit()
+            // Must bootout before overwriting, otherwise bootstrap will fail
+            bootoutService()
         }
 
         try? plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
@@ -284,111 +347,72 @@ class VaultManager: ObservableObject {
     func startVault() {
         guard isVaultAvailable else { return }
 
-        let plistPath = plistURL.path
-        let label = plistLabel
-
         DispatchQueue.global(qos: .userInitiated).async {
             self.createOrUpdatePlist()
 
-            let unloadTask = Process()
-            unloadTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            unloadTask.arguments = ["unload", plistPath]
-            try? unloadTask.run()
-            unloadTask.waitUntilExit()
+            // Bootout any stale registration so we can cleanly bootstrap
+            self.bootoutService()
 
             // Truncate startup log to avoid stale values from previous runs
             try? "".write(toFile: "/tmp/vault.startup.log", atomically: true, encoding: .utf8)
 
-            let loadTask = Process()
-            loadTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            loadTask.arguments = ["load", plistPath]
-
-            do {
-                try loadTask.run()
-                loadTask.waitUntilExit()
-            } catch {
-                print("Failed to load plist: \(error)")
+            // Bootstrap loads the plist into launchd
+            if !self.bootstrapService() {
+                print("Failed to bootstrap service")
+                return
             }
 
-            let startTask = Process()
-            startTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            startTask.arguments = ["start", label]
+            // Kick-start ensures the job actually runs (RunAtLoad is false)
+            self.kickstartService()
 
-            do {
-                try startTask.run()
+            DispatchQueue.main.async {
+                self.isRunning = true
+            }
+
+            /*
+             * Wait for Vault to finish writing its startup log.
+             * If the log is still empty after the initial delay,
+             * retry a few times before giving up.
+             */
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
+                var attempts = 0
+                let maxAttempts = 5
+                while attempts < maxAttempts {
+                    let logContent = (try? String(contentsOfFile: "/tmp/vault.startup.log", encoding: .utf8)) ?? ""
+                    if logContent.contains("VAULT_ADDR") {
+                        break
+                    }
+                    attempts += 1
+                    Thread.sleep(forTimeInterval: 1)
+                }
                 DispatchQueue.main.async {
-                    self.isRunning = true
+                    self.parseEnvironmentVariables()
+                    self.refreshStatus()
                 }
-
-                /*
-                * Wait for Vault to finish writing its startup log
-                * If the log is still empty after the initial delay,
-                * retry a few times before giving up.
-                */
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
-                    var attempts = 0
-                    let maxAttempts = 5
-                    while attempts < maxAttempts {
-                        let logContent = (try? String(contentsOfFile: "/tmp/vault.startup.log", encoding: .utf8)) ?? ""
-                        if logContent.contains("VAULT_ADDR") {
-                            break
-                        }
-                        attempts += 1
-                        Thread.sleep(forTimeInterval: 1)
-                    }
-                    DispatchQueue.main.async {
-                        self.parseEnvironmentVariables()
-                        self.refreshStatus()
-                    }
-                }
-            } catch {
-                print("Failed to start Vault: \(error)")
             }
         }
     }
 
     func stopVault() {
-        let plistPath = plistURL.path
-
         DispatchQueue.global(qos: .userInitiated).async {
-            let unloadTask = Process()
-            unloadTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            unloadTask.arguments = ["unload", plistPath]
-
-            do {
-                try unloadTask.run()
-                unloadTask.waitUntilExit()
-                DispatchQueue.main.async {
-                    self.isRunning = false
-                    self.vaultAddr = ""
-                    self.vaultCACert = ""
-                    self.parsedStatus = nil
-                }
-            } catch {
-                print("Failed to stop Vault: \(error)")
+            self.bootoutService()
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.vaultAddr = ""
+                self.vaultCACert = ""
+                self.parsedStatus = nil
             }
         }
     }
 
     func restartVault() {
-        let plistPath = plistURL.path
-
         DispatchQueue.global(qos: .userInitiated).async {
-            let unloadTask = Process()
-            unloadTask.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            unloadTask.arguments = ["unload", plistPath]
-
-            do {
-                try unloadTask.run()
-                unloadTask.waitUntilExit()
-                DispatchQueue.main.async {
-                    self.isRunning = false
-                    self.vaultAddr = ""
-                    self.vaultCACert = ""
-                    self.parsedStatus = nil
-                }
-            } catch {
-                print("Failed to stop Vault: \(error)")
+            self.bootoutService()
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.vaultAddr = ""
+                self.vaultCACert = ""
+                self.parsedStatus = nil
             }
 
             Thread.sleep(forTimeInterval: 1.0)
