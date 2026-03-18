@@ -1,5 +1,7 @@
 # vmenu
 
+![example workflow](https://github.com/brianshumate/vmenu/actions/workflows/swift.yml/badge.svg)
+
 A macOS menu bar application for managing a Vault dev mode server.
 
 ## Features
