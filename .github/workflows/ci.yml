@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: SwiftLint
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Run SwiftLint
+        run: swiftlint lint --strict
+
+  build:
+    name: Build (${{ matrix.configuration }})
+    runs-on: macos-15
+    strategy:
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build -c ${{ matrix.configuration }}
+
+  test:
+    name: Test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+  release:
+    name: Create Release
+    needs: [lint, build, test]
+    runs-on: macos-15
+    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from commit message
+        id: version
+        run: |
+          VERSION=$(echo "${{ github.event.head_commit.message }}" | sed -n 's/^release: *v\?\(.*\)/\1/p')
+          if [ -z "$VERSION" ]; then
+            echo "No version found in commit message"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Package binary
+        run: |
+          BINARY_PATH=$(swift build -c release --show-bin-path)/vmenu
+          mkdir -p dist
+          cp "$BINARY_PATH" dist/vmenu
+          cd dist && tar czf vmenu-macos-${{ steps.version.outputs.version }}.tar.gz vmenu
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: vmenu ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: dist/vmenu-macos-${{ steps.version.outputs.version }}.tar.gz
