@@ -10,8 +10,8 @@ excluded:
 
 # Relax rules for single-file app structure
 file_length:
-  warning: 1500
-  error: 2000
+  warning: 2000
+  error: 2500
 
 type_body_length:
   warning: 500

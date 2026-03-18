@@ -27,7 +27,7 @@ let package = Package(
         "Sources",
         "Tests",
         "build-app.sh",
-        "vmenu.app",
+        "vmenu.app"
       ],
       sources: ["vmenu.swift"]
     ),
