@@ -2,39 +2,39 @@
 import PackageDescription
 
 let package = Package(
-    name: "vmenu",
-    platforms: [
-        .macOS(.v13)
-    ],
-    targets: [
-        .target(
-            name: "VmenuCore",
-            dependencies: [],
-            path: "Sources/VmenuCore"
-        ),
-        .executableTarget(
-            name: "vmenu",
-            dependencies: [],
-            path: ".",
-            exclude: [
-                "LICENSE",
-                "README.md",
-                "prek.toml",
-                "share",
-                "vmenu/Info.plist",
-                "vmenu/AppIcon.icns",
-                "vmenu/vmenu.entitlements",
-                "Sources",
-                "Tests",
-                "build-app.sh",
-                "vmenu.app",
-            ],
-            sources: ["vmenu.swift"]
-        ),
-        .testTarget(
-            name: "VmenuCoreTests",
-            dependencies: ["VmenuCore"],
-            path: "Tests/VmenuCoreTests"
-        )
-    ]
+  name: "vmenu",
+  platforms: [
+    .macOS(.v13)
+  ],
+  targets: [
+    .target(
+      name: "VmenuCore",
+      dependencies: [],
+      path: "Sources/VmenuCore"
+    ),
+    .executableTarget(
+      name: "vmenu",
+      dependencies: [],
+      path: ".",
+      exclude: [
+        "LICENSE",
+        "README.md",
+        "prek.toml",
+        "share",
+        "vmenu/Info.plist",
+        "vmenu/AppIcon.icns",
+        "vmenu/vmenu.entitlements",
+        "Sources",
+        "Tests",
+        "build-app.sh",
+        "vmenu.app",
+      ],
+      sources: ["vmenu.swift"]
+    ),
+    .testTarget(
+      name: "VmenuCoreTests",
+      dependencies: ["VmenuCore"],
+      path: "Tests/VmenuCoreTests"
+    )
+  ]
 )
