@@ -7,6 +7,11 @@ let package = Package(
         .macOS(.v13)
     ],
     targets: [
+        .target(
+            name: "VmenuCore",
+            dependencies: [],
+            path: "Sources/VmenuCore"
+        ),
         .executableTarget(
             name: "vmenu",
             dependencies: [],
@@ -15,9 +20,16 @@ let package = Package(
                 "LICENSE",
                 "README.md",
                 "prek.toml",
-                "vmenu/Info.plist"
+                "vmenu/Info.plist",
+                "Sources",
+                "Tests"
             ],
             sources: ["vmenu.swift"]
+        ),
+        .testTarget(
+            name: "VmenuCoreTests",
+            dependencies: ["VmenuCore"],
+            path: "Tests/VmenuCoreTests"
         )
     ]
 )
