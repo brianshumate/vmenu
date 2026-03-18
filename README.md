@@ -113,9 +113,9 @@ The menu bar icon reflects the current server state:
 swift test
 ```
 
-## Contributing
+## AI Use Disclaimer
 
-Contributions are welcome! Please open an issue or pull request.
+This codebase has been built with the support of coding agents.
 
 ## License
 
