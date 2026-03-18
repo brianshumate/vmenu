@@ -81,6 +81,8 @@ class VaultManager: ObservableObject {
   @Published var isRunning = false
   @Published var vaultAddr = ""
   @Published var vaultCACert = ""
+  @Published var vaultToken = ""
+  @Published var unsealKey = ""
   @Published var isVaultAvailable = true
   @Published var statusOutput = ""
   @Published var parsedStatus: VaultStatus?
@@ -233,6 +235,8 @@ class VaultManager: ObservableObject {
             } else {
               self.vaultAddr = ""
               self.vaultCACert = ""
+              self.vaultToken = ""
+              self.unsealKey = ""
               self.parsedStatus = nil
             }
           }
@@ -473,6 +477,8 @@ class VaultManager: ObservableObject {
         self.isRunning = false
         self.vaultAddr = ""
         self.vaultCACert = ""
+        self.vaultToken = ""
+        self.unsealKey = ""
         self.parsedStatus = nil
       }
     }
@@ -485,6 +491,8 @@ class VaultManager: ObservableObject {
         self.isRunning = false
         self.vaultAddr = ""
         self.vaultCACert = ""
+        self.vaultToken = ""
+        self.unsealKey = ""
         self.parsedStatus = nil
       }
 
@@ -505,6 +513,8 @@ class VaultManager: ObservableObject {
     let lines = content.components(separatedBy: .newlines)
     var foundAddr = false
     var foundCACert = false
+    var foundToken = false
+    var foundUnsealKey = false
     for line in lines.reversed() {
       if !foundAddr, line.contains("export VAULT_ADDR=") {
         if let range = line.range(of: "export VAULT_ADDR=") {
@@ -520,7 +530,27 @@ class VaultManager: ObservableObject {
           foundCACert = true
         }
       }
-      if foundAddr && foundCACert { break }
+      if !foundToken, line.contains("Root Token:") {
+        if let range = line.range(of: "Root Token:") {
+          let token = String(line[range.upperBound...])
+            .trimmingCharacters(in: .whitespaces)
+          if !token.isEmpty {
+            vaultToken = token
+            foundToken = true
+          }
+        }
+      }
+      if !foundUnsealKey, line.contains("Unseal Key:") {
+        if let range = line.range(of: "Unseal Key:") {
+          let key = String(line[range.upperBound...])
+            .trimmingCharacters(in: .whitespaces)
+          if !key.isEmpty {
+            unsealKey = key
+            foundUnsealKey = true
+          }
+        }
+      }
+      if foundAddr && foundCACert && foundToken && foundUnsealKey { break }
     }
   }
 
@@ -667,7 +697,7 @@ class VaultManager: ObservableObject {
     let contentView: NSView
     if let status = parsedStatus {
       contentView = NSHostingView(
-        rootView: StatusPopoverView(status: status, rawOutput: statusOutput)
+        rootView: StatusPopoverView(status: status, rawOutput: statusOutput, unsealKey: unsealKey)
       )
     } else {
       contentView = NSHostingView(
@@ -681,7 +711,7 @@ class VaultManager: ObservableObject {
       backing: .buffered,
       defer: false
     )
-    window.title = "Vault Status"
+    window.title = "Vault server status"
     window.contentView = contentView
     window.center()
     window.isReleasedWhenClosed = false
@@ -1062,7 +1092,7 @@ struct VaultMenuView: View {
       }
       .disabled(!vaultManager.isVaultAvailable || !vaultManager.isRunning)
 
-      menuButton(title: "View Status", icon: "info.circle", shortcut: "⌘I") {
+      menuButton(title: "Server Status", icon: "info.circle", shortcut: "⌘I") {
         vaultManager.fetchStatus()
       }
       .disabled(!vaultManager.isVaultAvailable || !vaultManager.isRunning)
@@ -1080,6 +1110,9 @@ struct VaultMenuView: View {
       }
       if !vaultManager.vaultCACert.isEmpty {
         envCopyRow(label: "VAULT_CACERT", value: vaultManager.vaultCACert)
+      }
+      if !vaultManager.vaultToken.isEmpty {
+        envCopyRow(label: "VAULT_TOKEN", value: vaultManager.vaultToken)
       }
     }
     .padding(.vertical, 4)
@@ -1131,8 +1164,11 @@ struct VaultMenuView: View {
 struct StatusPopoverView: View {
   let status: VaultStatus
   let rawOutput: String
+  let unsealKey: String
 
   @State private var showRawOutput = false
+  @State private var showUnsealKey = false
+  @State private var unsealKeyCopied = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -1142,6 +1178,9 @@ struct StatusPopoverView: View {
         VStack(alignment: .leading, spacing: 16) {
           statusSection
           clusterSection
+          if !unsealKey.isEmpty {
+            unsealKeySection
+          }
           rawOutputSection
         }
         .padding(20)
@@ -1158,9 +1197,9 @@ struct StatusPopoverView: View {
         .foregroundColor(.accentColor)
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("Vault Status")
+        Text("Vault server status")
           .font(.headline)
-        Text("Development Server")
+        Text("Dev mode server")
           .font(.caption)
           .foregroundColor(.secondary)
       }
@@ -1251,6 +1290,66 @@ struct StatusPopoverView: View {
         }
         if status.clusterId != "-" {
           StatusRowView(label: "Cluster ID", value: status.clusterId)
+        }
+      }
+      .padding(12)
+      .background(
+        RoundedRectangle(cornerRadius: 8)
+          .fill(Color(nsColor: .controlBackgroundColor))
+      )
+    }
+  }
+
+  private var unsealKeySection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Unseal Key")
+        .font(.subheadline)
+        .fontWeight(.semibold)
+        .foregroundColor(.secondary)
+
+      VStack(spacing: 8) {
+        HStack(spacing: 8) {
+          Image(systemName: "key.fill")
+            .font(.caption)
+            .foregroundColor(.accentColor)
+            .frame(width: 16)
+
+          if showUnsealKey {
+            Text(unsealKey)
+              .font(.system(.caption, design: .monospaced))
+              .lineLimit(1)
+              .truncationMode(.middle)
+          } else {
+            Text(String(repeating: "•", count: 32))
+              .font(.system(.caption, design: .monospaced))
+              .foregroundColor(.secondary)
+          }
+
+          Spacer()
+
+          Button {
+            showUnsealKey.toggle()
+          } label: {
+            Image(systemName: showUnsealKey ? "eye.slash" : "eye")
+              .font(.caption)
+          }
+          .buttonStyle(.borderless)
+          .help(showUnsealKey ? "Hide unseal key" : "Reveal unseal key")
+
+          Button {
+            copyToClipboard(unsealKey)
+            unsealKeyCopied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+              unsealKeyCopied = false
+            }
+          } label: {
+            Label(
+              unsealKeyCopied ? "Copied" : "Copy",
+              systemImage: unsealKeyCopied ? "checkmark" : "doc.on.clipboard"
+            )
+            .font(.caption)
+          }
+          .buttonStyle(.borderless)
         }
       }
       .padding(12)

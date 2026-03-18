@@ -2,28 +2,32 @@
 
 ![CI](https://github.com/brianshumate/vmenu/actions/workflows/swift.yml/badge.svg)
 
-A macOS menu bar application for managing a Vault dev mode server.
-
-Requires **macOS 13 (Ventura)** or later — compatible through macOS 26 (Tahoe).
+**vmenu** is a macOS menu bar application for managing a Vault dev mode server.
 
 ## Features
 
-- Start / Stop / Restart Vault dev server via launchd
-- Live status polling with sealed/unsealed/stopped indicator in the menu bar
-- Copy `VAULT_ADDR` and `VAULT_CACERT` values to clipboard
-- View parsed `vault status` output
-- Notification when macOS hides the menu bar icon due to crowding
-- Single-instance enforcement — launching a second copy shows an alert and exits
+- Start/stop/restart Vault dev mode server process with `launchd`.
+- Live status polling with sealed/unsealed/stopped indicator in menu bar icon.
+- Copy `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` full `export` command lines to clipboard.
+- View server status, with raw status output and server unseal key.
+- Notification is macOS hides the menu bar icon due to crowding.
 
 ## Prerequisites
 
 - [Vault](https://www.vaultproject.io/) binary installed and in your PATH
 
-### Install Vault
+> [!TIP]
+> vmenu requires **macOS 13 (Ventura)** or later through macOS 26 (Tahoe).
+
+### Install Vault binary
+
+You can install the `vault` binary with Homebrew.
 
 ```shell
 brew install hashicorp/tap/vault
 ```
+
+You can also download Vault binaries from [releases.hashicorp.com](https://releases.hashicorp.com/vault), and manually install the binary someplace in your system PATH.
 
 ## Install from release
 
@@ -31,7 +35,7 @@ Download the latest DMG or zip from
 [Releases](https://github.com/brianshumate/vmenu/releases), then drag
 `vmenu.app` into `/Applications`.
 
-> **Gatekeeper note:** Release builds from GitHub Actions are ad-hoc signed.
+> [!NOTE] Release builds from GitHub Actions are ad-hoc signed.
 > On first launch macOS may show "vmenu can't be opened because Apple cannot
 > check it for malicious software." Right-click the app and choose **Open**,
 > or go to **System Settings → Privacy & Security** and click **Open Anyway**.
