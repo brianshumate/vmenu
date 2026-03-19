@@ -54,6 +54,16 @@ The menu bar icon is a small inverted triangle with a colored dot in the center 
 | 🟠 Orange | Vault is sealed |
 | 🔴 Red | Vault is stopped |
 
+### Logs
+
+A Vault dev mode server managed with vmenu writes to 2 log files under your home folder:
+
+- `$HOME/Library/Logs/vmenu/vault.startup.log`
+- `$HOME/Library/Logs/vmenu/vault.operations.log`
+
+> [!TIP]
+> The `vault.operations.log` contains useful details logged when you are actually using Vault, whereas the `vault.startup.log` contains just the server startup information.
+
 ## Prerequisites
 
 vmenu needs the `vault` binary installed and available in your `PATH`.
@@ -127,7 +137,7 @@ The build script reads the latest git tag (e.g. `v1.5`) and stamps it into `CFBu
 
 </details>
 
-## How it works
+## How it works and technical details
 
 vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main window.
 
@@ -162,14 +172,20 @@ All operations that the App Sandbox forbids are exposed through the `VmenuHelper
 
 ## Security model
 
-The main vmenu app runs inside the **App Sandbox**. Operations that the sandbox forbids — process spawning (`launchctl`), file I/O outside the container (`~/Library/LaunchAgents/`, `~/Library/Logs/vmenu/`, CA cert files) — are delegated to a dedicated XPC helper agent. The entitlements for each component are documented in [`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements) and [`vmenuhelper/vmenuhelper.entitlements`](vmenuhelper/vmenuhelper.entitlements).
+vmenu is for managing a dev mode server, but it tries to keep security in focus while doing so.
+
+The main vmenu app runs inside the **App Sandbox**.
+
+Operations that the sandbox forbids, like process spawning (`launchctl`), file I/O outside the container (`~/Library/LaunchAgents/`, `~/Library/Logs/vmenu/`, CA cert files) are delegated to a dedicated XPC helper agent.
+
+The entitlements for each component are documented in [`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements) and [`vmenuhelper/vmenuhelper.entitlements`](vmenuhelper/vmenuhelper.entitlements).
 
 | Component | Sandbox | Entitlements |
 |---|---|---|
 | Main app | Enabled | `network.client` (outbound HTTPS to `127.0.0.1:8200`) |
 | XPC helper | Disabled | Hardened runtime only (no sandbox) |
 
-Defense-in-depth measures:
+The app also uses the these defense-in-depth measures:
 
 - **App Sandbox** on the main app restricts filesystem, process, and network access.
 - **Hardened Runtime** enabled for both the main app and the XPC helper.

@@ -383,23 +383,6 @@ struct StatusPopoverView: View {
     return displayFormatter.string(from: date)
   }
 
-  /// Copy text to the system clipboard.
-  ///
-  /// When `autoExpire` is `true` the clipboard is automatically cleared
-  /// after 30 seconds if it still contains the copied value.
-  private func copyToClipboard(_ text: String, autoExpire: Bool = false) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-
-    if autoExpire {
-      let changeCount = NSPasteboard.general.changeCount
-      DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
-        if NSPasteboard.general.changeCount == changeCount {
-          NSPasteboard.general.clearContents()
-        }
-      }
-    }
-  }
 }
 
 // MARK: - CardView

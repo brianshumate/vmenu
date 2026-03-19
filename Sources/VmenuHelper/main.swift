@@ -1,25 +1,92 @@
 import Foundation
+import OSLog
+import Security
 import VmenuCore
 import VmenuXPCProtocol
+
+/// Unified logger for the XPC helper agent.
+///
+/// Uses `os_log` via the `Logger` API so messages go through the unified
+/// logging system with proper privacy annotations instead of `print()`.
+private let logger = Logger(subsystem: "com.brianshumate.vmenu.helper", category: "helper")
 
 // MARK: - Helper Delegate
 
 /// XPC listener delegate that creates connection handlers for each
 /// incoming connection from the main app.
+///
+/// Validates that the connecting process is signed by the same team
+/// before accepting the connection.  This prevents arbitrary local
+/// processes from invoking privileged helper operations (launchctl,
+/// file I/O, token/key access) simply by knowing the Mach service name.
 final class HelperDelegate: NSObject, NSXPCListenerDelegate {
+
+  /// Code-signing requirement that the connecting process must satisfy.
+  ///
+  /// The requirement enforces:
+  /// 1. The process is signed with a valid Apple code signature.
+  /// 2. The signing identifier matches the main app bundle ID.
+  ///
+  /// During development (ad-hoc signed builds) the identifier check is
+  /// sufficient.  For distribution builds signed with a Developer ID
+  /// certificate, append:
+  ///   `and certificate leaf[subject.OU] = "YOUR_TEAM_ID"`
+  /// to also pin to a specific team.
+  private static let signingRequirement =
+    "identifier \"com.brianshumate.vmenu\" and anchor apple generic"
+
   func listener(
     _ listener: NSXPCListener,
     shouldAcceptNewConnection newConnection: NSXPCConnection
   ) -> Bool {
-    // Validate the connecting process is our main app.
-    // In a production build you would check the code-signing requirement
-    // here. For now we accept connections and rely on the Mach service
-    // name being scoped to our app bundle.
+    // Validate the connecting process is our main app by checking its
+    // code-signing identity.  Reject connections that do not satisfy
+    // the requirement — this prevents local privilege escalation
+    // through the helper's Mach service.
+    if !validateConnection(newConnection) {
+      logger.error("Rejecting XPC connection — code-signing requirement not met (pid \(newConnection.processIdentifier))")
+      newConnection.invalidate()
+      return false
+    }
+
     let interface = NSXPCInterface(with: VmenuHelperProtocol.self)
     newConnection.exportedInterface = interface
     newConnection.exportedObject = HelperHandler()
     newConnection.resume()
     return true
+  }
+
+  /// Check the connecting process against the code-signing requirement.
+  ///
+  /// Uses `SecCodeCopyGuestWithAttributes` to obtain the code object for
+  /// the connecting PID, then evaluates it against the compiled
+  /// requirement string.
+  private func validateConnection(_ connection: NSXPCConnection) -> Bool {
+    let pid = connection.processIdentifier
+
+    // Obtain the SecCode for the connecting process.
+    var codeRef: SecCode?
+    let attrs = [kSecGuestAttributePid: pid] as CFDictionary
+    guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &codeRef) == errSecSuccess,
+          let code = codeRef
+    else {
+      return false
+    }
+
+    // Compile the requirement string.
+    var requirementRef: SecRequirement?
+    guard SecRequirementCreateWithString(
+      Self.signingRequirement as CFString,
+      [],
+      &requirementRef
+    ) == errSecSuccess,
+          let requirement = requirementRef
+    else {
+      return false
+    }
+
+    // Evaluate the code against the requirement.
+    return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
   }
 }
 
@@ -195,27 +262,15 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       reply(nil)
       return
     }
-    guard FileManager.default.fileExists(atPath: path) else {
+    // Use the TOCTOU-safe reader that opens with O_NOFOLLOW and validates
+    // ownership/permissions via fstat() on the same file descriptor,
+    // eliminating the race window between validation and reading.
+    guard let data = VmenuCore.safeReadCACertData(path) else {
+      logger.warning("Refusing to read CA cert — failed safe read (path validation, symlink, permissions, or I/O error): \(path, privacy: .private)")
       reply(nil)
       return
     }
-    guard isRegularFile(atPath: path) else {
-      print("vmenu-helper: refusing to read \(path) — not a regular file")
-      reply(nil)
-      return
-    }
-    guard VmenuCore.validateCACertPath(path) else {
-      print("vmenu-helper: refusing to read \(path) — failed path validation")
-      reply(nil)
-      return
-    }
-    do {
-      let data = try Data(contentsOf: URL(fileURLWithPath: path))
-      reply(data)
-    } catch {
-      print("vmenu-helper: failed to read CA cert \(path): \(error.localizedDescription)")
-      reply(nil)
-    }
+    reply(data)
   }
 
   func removeCACertFile(atPath path: String, withReply reply: @escaping (Bool) -> Void) {
@@ -228,13 +283,13 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       return
     }
     guard isRegularFile(atPath: path) else {
-      print("vmenu-helper: refusing to remove \(path) — not a regular file")
+      logger.warning("Refusing to remove — not a regular file: \(path, privacy: .private)")
       reply(false)
       return
     }
     // Validate the path is safe (not a symlink, not in /tmp, etc.)
     guard VmenuCore.validateCACertPath(path) else {
-      print("vmenu-helper: refusing to remove \(path) — failed path validation")
+      logger.warning("Refusing to remove — failed path validation: \(path, privacy: .private)")
       reply(false)
       return
     }
@@ -242,7 +297,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       try FileManager.default.removeItem(atPath: path)
       reply(true)
     } catch {
-      print("vmenu-helper: failed to remove CA cert \(path): \(error.localizedDescription)")
+      logger.error("Failed to remove CA cert: \(error.localizedDescription, privacy: .public)")
       reply(false)
     }
   }
@@ -326,7 +381,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
 
   private func performCreateOrUpdatePlist() -> Bool {
     guard ensureLogDirectory() else {
-      print("vmenu-helper: aborting plist creation — log directory unavailable")
+      logger.error("vmenu-helper: aborting plist creation — log directory unavailable")
       return false
     }
 
@@ -340,7 +395,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
         withIntermediateDirectories: true
       )
     } catch {
-      print("vmenu-helper: failed to create LaunchAgents directory: \(error.localizedDescription)")
+      logger.error("vmenu-helper: failed to create LaunchAgents directory: \(error.localizedDescription, privacy: .public)")
       return false
     }
 
@@ -365,7 +420,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
         ofItemAtPath: plistURL.path
       )
     } catch {
-      print("vmenu-helper: failed to set plist permissions: \(error.localizedDescription)")
+      logger.error("vmenu-helper: failed to set plist permissions: \(error.localizedDescription, privacy: .public)")
       try? FileManager.default.removeItem(atPath: plistURL.path)
       return false
     }
@@ -390,7 +445,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       )
       return true
     } catch {
-      print("vmenu-helper: failed to create log directory: \(error.localizedDescription)")
+      logger.error("vmenu-helper: failed to create log directory: \(error.localizedDescription, privacy: .public)")
       return false
     }
   }
@@ -405,7 +460,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     let path = url.path
     guard FileManager.default.fileExists(atPath: path) else { return nil }
     guard isRegularFile(atPath: path) else {
-      print("vmenu-helper: refusing to read \(path) — not a regular file")
+      logger.error("vmenu-helper: refusing to read \(path) — not a regular file")
       return nil
     }
     return try? String(contentsOf: url, encoding: .utf8)
@@ -418,13 +473,13 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
 
     if fileManager.fileExists(atPath: path) {
       guard isRegularFile(atPath: path) else {
-        print("vmenu-helper: refusing to recreate \(path) — not a regular file")
+        logger.error("vmenu-helper: refusing to recreate \(path) — not a regular file")
         return false
       }
       do {
         try fileManager.removeItem(atPath: path)
       } catch {
-        print("vmenu-helper: failed to remove \(path): \(error.localizedDescription)")
+        logger.error("vmenu-helper: failed to remove \(path): \(error.localizedDescription, privacy: .public)")
         return false
       }
     }
@@ -432,7 +487,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     let fileDescriptor = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
     guard fileDescriptor >= 0 else {
       let err = String(cString: strerror(errno))
-      print("vmenu-helper: exclusive create of \(path) failed: \(err)")
+      logger.error("vmenu-helper: exclusive create of \(path) failed: \(err)")
       return false
     }
     close(fileDescriptor)

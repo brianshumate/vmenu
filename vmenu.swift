@@ -1,10 +1,18 @@
 import AppKit
+import OSLog
 import Security
 import ServiceManagement
 import SwiftUI
 import UserNotifications
 import VmenuCore
 import VmenuXPCProtocol
+
+/// Unified logger for the main app process.
+///
+/// Uses `os_log` via the `Logger` API so messages go through the unified
+/// logging system with proper privacy annotations instead of `print()`,
+/// which leaks operational details to any process running `log stream`.
+private let logger = Logger(subsystem: "com.brianshumate.vmenu", category: "app")
 
 /// Lightweight HTTP client for the Vault REST API.
 ///
@@ -101,7 +109,7 @@ class VaultHTTPClient: NSObject, URLSessionDelegate {
         }
 
         guard let cert = loadCertificate(from: certData) else {
-            print("vmenu: failed to load CA certificate — rejecting TLS challenge")
+            logger.warning("Failed to load CA certificate — rejecting TLS challenge")
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
@@ -152,35 +160,42 @@ class XPCClient {
     static let shared = XPCClient()
 
     private var connection: NSXPCConnection?
-    private let connectionLock = NSLock()
+
+    /// Serial queue protecting `connection`.
+    ///
+    /// Replaces the previous `NSLock`-based approach.  `NSLock` is not
+    /// reentrant, so if `conn.resume()` triggered an immediate
+    /// invalidation callback while `getConnection()` held the lock the
+    /// app would deadlock.  A serial `DispatchQueue` naturally serialises
+    /// access and the `async` dispatch in the handlers avoids reentrancy.
+    private let connectionQueue = DispatchQueue(label: "com.brianshumate.vmenu.xpc-connection")
 
     /// Obtain (or create) the XPC connection to the helper.
     private func getConnection() -> NSXPCConnection {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
+        connectionQueue.sync {
+            if let existing = connection {
+                return existing
+            }
 
-        if let existing = connection {
-            return existing
+            let conn = NSXPCConnection(
+                machServiceName: vmenuHelperMachServiceName,
+                options: []
+            )
+            conn.remoteObjectInterface = NSXPCInterface(with: VmenuHelperProtocol.self)
+            conn.invalidationHandler = { [weak self] in
+                self?.connectionQueue.async {
+                    self?.connection = nil
+                }
+            }
+            conn.interruptionHandler = { [weak self] in
+                self?.connectionQueue.async {
+                    self?.connection = nil
+                }
+            }
+            conn.resume()
+            connection = conn
+            return conn
         }
-
-        let conn = NSXPCConnection(
-            machServiceName: vmenuHelperMachServiceName,
-            options: []
-        )
-        conn.remoteObjectInterface = NSXPCInterface(with: VmenuHelperProtocol.self)
-        conn.invalidationHandler = { [weak self] in
-            self?.connectionLock.lock()
-            self?.connection = nil
-            self?.connectionLock.unlock()
-        }
-        conn.interruptionHandler = { [weak self] in
-            self?.connectionLock.lock()
-            self?.connection = nil
-            self?.connectionLock.unlock()
-        }
-        conn.resume()
-        connection = conn
-        return conn
     }
 
     /// Get a typed proxy to the helper, calling `errorHandler` on XPC failure.
@@ -189,19 +204,19 @@ class XPCClient {
         return conn.remoteObjectProxyWithErrorHandler(errorHandler) as? VmenuHelperProtocol
     }
 
-    /// Convenience: get a proxy that prints errors to stderr.
+    /// Convenience: get a proxy that logs errors.
     func proxy() -> VmenuHelperProtocol? {
         proxy { error in
-            print("vmenu: XPC error: \(error.localizedDescription)")
+            logger.error("XPC error: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     /// Invalidate the connection (e.g. on app termination).
     func invalidate() {
-        connectionLock.lock()
-        connection?.invalidate()
-        connection = nil
-        connectionLock.unlock()
+        connectionQueue.sync {
+            connection?.invalidate()
+            connection = nil
+        }
     }
 
     // MARK: - Async wrappers
@@ -360,7 +375,7 @@ func registerHelperAgent() {
         if nsError.domain == "SMAppService" && nsError.code == 1 {
             // Already registered — nothing to do.
         } else {
-            print("vmenu: failed to register helper agent: \(error.localizedDescription)")
+            logger.error("Failed to register helper agent: \(error.localizedDescription, privacy: .public)")
         }
     }
 }
@@ -466,7 +481,7 @@ class VaultManager: ObservableObject {
             repeats: true
         ) { [weak self] _ in
             guard let self else { return }
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 guard self.isRunning, self.isVaultAvailable else { return }
                 self.refreshStatus()
             }
@@ -607,7 +622,7 @@ extension VaultManager {
         Task {
             // Create or update the plist via the helper.
             guard await xpc.createOrUpdatePlist() else {
-                print("vmenu: aborting start — plist creation failed")
+                logger.error("Aborting start — plist creation failed")
                 return
             }
 
@@ -616,13 +631,13 @@ extension VaultManager {
 
             // Atomically recreate the startup log via the helper.
             guard await xpc.recreateStartupLog() else {
-                print("vmenu: aborting start — could not recreate startup log")
+                logger.error("Aborting start — could not recreate startup log")
                 return
             }
 
             // Bootstrap loads the plist into launchd.
             if !(await xpc.bootstrapService()) {
-                print("Failed to bootstrap service")
+                logger.error("Failed to bootstrap service")
                 return
             }
 
@@ -691,7 +706,7 @@ extension VaultManager {
             if isLoopbackVaultAddr(env.vaultAddr) {
                 vaultAddr = env.vaultAddr
             } else {
-                print("vmenu: ignoring non-loopback VAULT_ADDR: \(env.vaultAddr)")
+                logger.warning("Ignoring non-loopback VAULT_ADDR: \(env.vaultAddr, privacy: .private)")
                 vaultAddr = ""
             }
         }
@@ -711,7 +726,7 @@ extension VaultManager {
             if isValidVaultToken(env.vaultToken) {
                 vaultToken = env.vaultToken
             } else {
-                print("vmenu: ignoring invalid VAULT_TOKEN (unexpected characters or length)")
+                logger.warning("Ignoring invalid VAULT_TOKEN (unexpected characters or length)")
                 vaultToken = ""
             }
         }
@@ -721,7 +736,7 @@ extension VaultManager {
             if isValidVaultUnsealKey(env.unsealKey) {
                 unsealKey = env.unsealKey
             } else {
-                print("vmenu: ignoring invalid Unseal Key (unexpected characters or length)")
+                logger.warning("Ignoring invalid Unseal Key (unexpected characters or length)")
                 unsealKey = ""
             }
         }
@@ -763,6 +778,31 @@ extension VaultManager {
                 self.statusOutput = output
                 self.parsedStatus = parsed
                 self.showStatusWindow()
+            }
+        }
+    }
+}
+
+// MARK: - Clipboard Utility
+
+/// Copy text to the system clipboard.
+///
+/// When `autoExpire` is `true` the clipboard is automatically cleared
+/// after 30 seconds if it still contains the copied value.  This limits
+/// the window during which other applications can snoop the secret via
+/// `NSPasteboard`.
+///
+/// Shared implementation used by both `VaultMenuView` and
+/// `StatusPopoverView` to avoid duplicated clipboard logic.
+func copyToClipboard(_ text: String, autoExpire: Bool = false) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+
+    if autoExpire {
+        let changeCount = NSPasteboard.general.changeCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            if NSPasteboard.general.changeCount == changeCount {
+                NSPasteboard.general.clearContents()
             }
         }
     }
@@ -1384,25 +1424,6 @@ struct VaultMenuView: View {
         MenuRowButton(title: title, icon: icon, shortcut: shortcut, action: action)
     }
 
-    /// Copy text to the system clipboard.
-    ///
-    /// When `autoExpire` is `true` the clipboard is automatically cleared
-    /// after 30 seconds if it still contains the copied value.  This limits
-    /// the window during which other applications can snoop the secret via
-    /// `NSPasteboard`.
-    private func copyToClipboard(_ text: String, autoExpire: Bool = false) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-
-        if autoExpire {
-            let changeCount = NSPasteboard.general.changeCount
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
-                if NSPasteboard.general.changeCount == changeCount {
-                    NSPasteboard.general.clearContents()
-                }
-            }
-        }
-    }
 }
 
 struct AboutView: View {
@@ -1550,13 +1571,13 @@ class MenuBarVisibilityMonitor {
     func startMonitoring(interval: TimeInterval = 5) {
         guard timer == nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 self?.checkVisibility()
                 self?.timer = Timer.scheduledTimer(
                     withTimeInterval: interval,
                     repeats: true
                 ) { [weak self] _ in
-                    MainActor.assumeIsolated {
+                    Task { @MainActor in
                         self?.checkVisibility()
                     }
                 }
@@ -1636,9 +1657,8 @@ class MenuBarVisibilityMonitor {
 
         center.add(request) { error in
             if let error {
-                print(
-                    "Failed to deliver menu bar visibility "
-                        + "notification: \(error.localizedDescription)"
+                logger.error(
+                    "Failed to deliver menu bar visibility notification: \(error.localizedDescription, privacy: .public)"
                 )
             }
         }
@@ -1649,13 +1669,10 @@ class MenuBarVisibilityMonitor {
 
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
-                print("Notification permission error: \(error.localizedDescription)")
+                logger.error("Notification permission error: \(error.localizedDescription, privacy: .public)")
             }
             if !granted {
-                print(
-                    "vmenu: Notification permission not granted "
-                        + "— menu bar visibility alerts will be silent."
-                )
+                logger.info("Notification permission not granted — menu bar visibility alerts will be silent")
             }
         }
     }
