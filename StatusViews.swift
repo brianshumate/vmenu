@@ -33,7 +33,7 @@ struct StatusPopoverView: View {
         .padding(.bottom, 4)
       }
     }
-    .frame(width: 520, height: 560)
+    .frame(minWidth: 400, idealWidth: 520, minHeight: 400, idealHeight: 560)
     .background(Color(nsColor: .windowBackgroundColor))
   }
 
@@ -55,22 +55,24 @@ struct StatusPopoverView: View {
             .fill(Color(nsColor: .separatorColor).opacity(0.12))
             .frame(width: 44, height: 44)
           Image(systemName: "server.rack")
-            .font(.system(size: 20, weight: .medium))
+            .font(.title3)
+            .fontWeight(.medium)
             .foregroundStyle(.secondary)
         }
 
         VStack(alignment: .leading, spacing: 3) {
           Text("Vault Server Status")
-            .font(.system(size: 15, weight: .semibold))
+            .font(.headline)
           HStack(spacing: 6) {
             Text("v\(status.version)")
-              .font(.system(size: 11, weight: .medium, design: .monospaced))
+              .font(.system(.caption, design: .monospaced))
+              .fontWeight(.medium)
               .foregroundStyle(.secondary)
             if status.buildDate != "-" {
               Text("·")
                 .foregroundStyle(.quaternary)
               Text(formatBuildDate(status.buildDate))
-                .font(.system(size: 11))
+                .font(.caption)
                 .foregroundStyle(.secondary)
             }
           }
@@ -83,7 +85,7 @@ struct StatusPopoverView: View {
       .padding(.horizontal, 18)
       .padding(.vertical, 14)
     }
-    .frame(height: 72)
+    .frame(minHeight: 72)
   }
 
   private var sealStatusBadge: some View {
@@ -92,9 +94,11 @@ struct StatusPopoverView: View {
 
     return HStack(spacing: 6) {
       Image(systemName: icon)
-        .font(.system(size: 10, weight: .semibold))
+        .font(.caption2)
+        .fontWeight(.semibold)
       Text(label)
-        .font(.system(size: 12, weight: .semibold))
+        .font(.caption)
+        .fontWeight(.semibold)
     }
     .foregroundStyle(.secondary)
     .padding(.horizontal, 12)
@@ -193,7 +197,7 @@ struct StatusPopoverView: View {
               .font(.caption)
               .foregroundStyle(.tertiary)
             Text("No cluster details available")
-              .font(.system(size: 12))
+              .font(.caption)
               .foregroundStyle(.tertiary)
             Spacer()
           }
@@ -209,19 +213,19 @@ struct StatusPopoverView: View {
     CardView(title: "Unseal Key", icon: "key.horizontal.fill") {
       HStack(spacing: 10) {
         Image(systemName: "key.fill")
-          .font(.system(size: 11))
+          .font(.caption)
           .foregroundStyle(.secondary)
           .frame(width: 18)
 
         Group {
           if showUnsealKey {
             Text(unsealKey)
-              .font(.system(size: 11, design: .monospaced))
+              .font(.system(.caption, design: .monospaced))
               .lineLimit(1)
               .truncationMode(.middle)
           } else {
             Text(String(repeating: "•", count: 32))
-              .font(.system(size: 11, design: .monospaced))
+              .font(.system(.caption, design: .monospaced))
               .foregroundStyle(.tertiary)
           }
         }
@@ -234,7 +238,7 @@ struct StatusPopoverView: View {
             showUnsealKey.toggle()
           } label: {
             Image(systemName: showUnsealKey ? "eye.slash.fill" : "eye.fill")
-              .font(.system(size: 11))
+              .font(.caption)
               .foregroundStyle(.secondary)
               .frame(width: 24, height: 24)
               .contentShape(Rectangle())
@@ -251,9 +255,10 @@ struct StatusPopoverView: View {
           } label: {
             HStack(spacing: 3) {
               Image(systemName: unsealKeyCopied ? "checkmark" : "doc.on.clipboard")
-                .font(.system(size: 10))
+                .font(.caption2)
               Text(unsealKeyCopied ? "Copied" : "Copy")
-                .font(.system(size: 10, weight: .medium))
+                .font(.caption2)
+                .fontWeight(.medium)
             }
             .foregroundStyle(unsealKeyCopied ? .green : .secondary)
             .padding(.horizontal, 8)
@@ -295,9 +300,10 @@ struct StatusPopoverView: View {
           } label: {
             HStack(spacing: 3) {
               Image(systemName: "doc.on.clipboard")
-                .font(.system(size: 10))
+                .font(.caption2)
               Text("Copy")
-                .font(.system(size: 10, weight: .medium))
+                .font(.caption2)
+                .fontWeight(.medium)
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
@@ -311,10 +317,9 @@ struct StatusPopoverView: View {
         }
 
         Text(rawOutput)
-          .font(.system(size: 11, design: .monospaced))
+          .font(.system(.caption, design: .monospaced))
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
-          .fixedSize(horizontal: true, vertical: false)
           .padding(12)
           .frame(maxWidth: .infinity, alignment: .leading)
           .background(
@@ -424,15 +429,18 @@ private struct CardView<Content: View>: View {
   private func headerContent(expanded: Bool?) -> some View {
     HStack(spacing: 7) {
       Image(systemName: icon)
-        .font(.system(size: 11, weight: .semibold))
+        .font(.caption)
+        .fontWeight(.semibold)
         .foregroundStyle(.secondary)
       Text(title)
-        .font(.system(size: 12, weight: .semibold))
+        .font(.caption)
+        .fontWeight(.semibold)
         .foregroundStyle(.secondary)
       Spacer()
       if let expanded {
         Image(systemName: "chevron.right")
-          .font(.system(size: 9, weight: .bold))
+          .font(.caption2)
+          .fontWeight(.bold)
           .foregroundStyle(.tertiary)
           .rotationEffect(.degrees(expanded ? 90 : 0))
       }
@@ -454,26 +462,30 @@ private struct MetricTile: View {
   let value: String
   let icon: String
 
+  @ScaledMetric(relativeTo: .caption2) private var iconBoxSize: CGFloat = 28
+
   var body: some View {
     HStack(spacing: 8) {
       ZStack {
         RoundedRectangle(cornerRadius: 6)
           .fill(Color(nsColor: .separatorColor).opacity(0.10))
-          .frame(width: 28, height: 28)
+          .frame(width: iconBoxSize, height: iconBoxSize)
         Image(systemName: icon)
-          .font(.system(size: 12, weight: .medium))
+          .font(.caption)
+          .fontWeight(.medium)
           .foregroundStyle(.secondary)
       }
 
       VStack(alignment: .leading, spacing: 1) {
         Text(label)
-          .font(.system(size: 10))
+          .font(.caption2)
           .foregroundStyle(.tertiary)
-          .fixedSize(horizontal: true, vertical: false)
+          .lineLimit(1)
         Text(value)
-          .font(.system(size: 13, weight: .semibold))
+          .font(.body)
+          .fontWeight(.semibold)
           .foregroundStyle(.primary)
-          .fixedSize(horizontal: true, vertical: false)
+          .lineLimit(1)
       }
 
       Spacer(minLength: 0)
@@ -505,19 +517,21 @@ private struct ClusterDetailRow: View {
     VStack(spacing: 0) {
       HStack(spacing: 8) {
         Image(systemName: icon)
-          .font(.system(size: 10, weight: .medium))
+          .font(.caption2)
+          .fontWeight(.medium)
           .foregroundStyle(.tertiary)
           .frame(width: 16)
         Text(label)
-          .font(.system(size: 12))
+          .font(.caption)
           .foregroundStyle(.secondary)
-          .frame(width: 40, alignment: .leading)
+          .frame(minWidth: 40, alignment: .leading)
         Text(value)
           .font(
             isMonospaced
-              ? .system(size: 12, design: .monospaced)
-              : .system(size: 12, weight: .medium)
+              ? .system(.caption, design: .monospaced)
+              : .caption
           )
+          .fontWeight(isMonospaced ? .regular : .medium)
           .foregroundStyle(.primary)
           .lineLimit(1)
           .truncationMode(.middle)
@@ -545,11 +559,11 @@ struct StatusRowView: View {
       Text(label)
         .font(.caption)
         .foregroundStyle(.secondary)
-        .fixedSize(horizontal: true, vertical: false)
+        .lineLimit(1)
       Spacer()
       Text(value)
         .font(.system(.caption, design: .monospaced))
-        .fixedSize(horizontal: true, vertical: false)
+        .lineLimit(1)
     }
   }
 }
@@ -572,11 +586,11 @@ struct StatusItemView: View {
         Text(label)
           .font(.caption2)
           .foregroundStyle(.secondary)
-          .fixedSize(horizontal: true, vertical: false)
+          .lineLimit(1)
         Text(value)
           .font(.subheadline)
           .fontWeight(.medium)
-          .fixedSize(horizontal: true, vertical: false)
+          .lineLimit(1)
       }
 
       Spacer()
@@ -594,25 +608,27 @@ struct StatusItemView: View {
 struct StatusErrorView: View {
   let errorMessage: String
 
+  @ScaledMetric(relativeTo: .title) private var iconCircleSize: CGFloat = 80
+
   var body: some View {
     VStack(spacing: 20) {
-      Spacer()
+      Spacer(minLength: 24)
 
       ZStack {
         Circle()
           .fill(Color(nsColor: .separatorColor).opacity(0.10))
-          .frame(width: 80, height: 80)
+          .frame(width: iconCircleSize, height: iconCircleSize)
         Image(systemName: "exclamationmark.triangle.fill")
-          .font(.system(size: 36))
+          .font(.title)
           .foregroundStyle(.secondary)
       }
 
       VStack(spacing: 6) {
         Text("Unable to Reach Vault")
-          .font(.system(size: 16, weight: .semibold))
+          .font(.headline)
 
         Text(errorMessage)
-          .font(.system(size: 12))
+          .font(.caption)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
           .lineSpacing(2)
@@ -623,17 +639,18 @@ struct StatusErrorView: View {
         NSApp.keyWindow?.close()
       } label: {
         Text("Dismiss")
-          .font(.system(size: 13, weight: .medium))
+          .font(.body)
+          .fontWeight(.medium)
           .padding(.horizontal, 24)
           .padding(.vertical, 8)
       }
       .buttonStyle(.borderedProminent)
       .keyboardShortcut(.return, modifiers: [])
 
-      Spacer()
+      Spacer(minLength: 48)
     }
     .padding(30)
-    .frame(width: 340, height: 280)
+    .frame(minWidth: 340, idealWidth: 340, minHeight: 280)
     .background(Color(nsColor: .windowBackgroundColor))
   }
 }

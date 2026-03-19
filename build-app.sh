@@ -68,12 +68,18 @@ cp "${SCRIPT_DIR}/vmenuhelper/${HELPER_NAME}.plist" \
 # PkgInfo — standard for all macOS .app bundles
 printf 'APPL????' > "${APP_DIR}/Contents/PkgInfo"
 
-# Copy icon
+# Copy icon (.icns for legacy support)
 if [ -f "${SCRIPT_DIR}/vmenu/AppIcon.icns" ]; then
     cp "${SCRIPT_DIR}/vmenu/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
-    echo "Included app icon."
+    echo "Included app icon (.icns)."
 else
     echo "Warning: AppIcon.icns not found, app will use default icon."
+fi
+
+# Copy asset catalog if present (for CFBundleIconName / modern icon support)
+if [ -d "${SCRIPT_DIR}/vmenu/Assets.xcassets" ]; then
+    cp -R "${SCRIPT_DIR}/vmenu/Assets.xcassets" "${APP_DIR}/Contents/Resources/Assets.xcassets"
+    echo "Included asset catalog."
 fi
 
 # ── Stamp version from git tag (if available) ────────────────────────────────
