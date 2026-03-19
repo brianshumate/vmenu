@@ -636,8 +636,7 @@ extension VaultManager {
             let maxAttempts = 5
             for _ in 0..<maxAttempts {
                 if let logContent = await xpc.readStartupLog(),
-                    logContent.contains("VAULT_ADDR")
-                {
+                    logContent.contains("VAULT_ADDR") {
                     break
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
