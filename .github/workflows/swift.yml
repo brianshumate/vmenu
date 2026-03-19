@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: SwiftLint
+  check:
+    name: Lint & Test
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -25,30 +25,12 @@ jobs:
       - name: Run SwiftLint
         run: swiftlint lint --strict
 
-  build:
-    name: Build (${{ matrix.configuration }})
-    runs-on: macos-15
-    strategy:
-      matrix:
-        configuration: [debug, release]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build
-        run: swift build -c ${{ matrix.configuration }}
-
-  test:
-    name: Test
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Run tests
         run: swift test
 
   release:
     name: Create Release
-    needs: [lint, build, test]
+    needs: [check]
     runs-on: macos-15
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -66,11 +48,6 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Stamp version in Info.plist
-        run: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.version }}" vmenu/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.version.outputs.version }}" vmenu/Info.plist
-
       - name: Import code-signing certificate
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12 }}
@@ -80,19 +57,15 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
 
-          # Decode certificate (printf avoids trailing newline from echo)
+          # Decode certificate
           printf '%s' "$P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-
-          # Verify the p12 file is valid before importing
-          echo "P12 file size: $(wc -c < "$CERTIFICATE_PATH") bytes"
-          openssl pkcs12 -in "$CERTIFICATE_PATH" -passin pass:"$P12_PASSWORD" -nokeys -info 2>&1 | head -5 || true
 
           # Create temporary keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Add keychain to search list BEFORE import (include system keychain for Apple Root CA)
+          # Add keychain to search list (include system keychain for Apple Root CA)
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security default-keychain -s "$KEYCHAIN_PATH"
 
@@ -114,26 +87,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-      - name: Verify signing identity
-        run: |
-          echo "=== Keychain search list ==="
-          security list-keychains -d user
-          echo ""
-          echo "=== Default keychain ==="
-          security default-keychain
-          echo ""
-          echo "=== All codesigning identities (including invalid) ==="
-          security find-identity -p codesigning
-          echo ""
-          echo "=== Valid codesigning identities ==="
-          security find-identity -v -p codesigning
-          echo ""
-          echo "=== Keychain contents (certs) ==="
-          security find-certificate -a -c "Developer ID" "$KEYCHAIN_PATH" 2>&1 | head -20 || echo "No Developer ID certs found"
-          echo ""
-          echo "=== Keychain contents (keys) ==="
-          security find-key -l "$KEYCHAIN_PATH" 2>&1 | head -10 || echo "No keys found"
 
       - name: Build and sign .app bundle
         env:
