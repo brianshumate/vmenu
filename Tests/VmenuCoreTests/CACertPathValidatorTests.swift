@@ -7,6 +7,7 @@ final class CACertPathValidatorTests: XCTestCase {
 
   // MARK: - Helpers
 
+  // swiftlint:disable:next implicitly_unwrapped_optional
   private var tempDir: URL!
 
   override func setUp() {

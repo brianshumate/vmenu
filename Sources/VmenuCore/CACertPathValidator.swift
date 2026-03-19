@@ -6,7 +6,7 @@ private let unsafeDirectoryPrefixes: [String] = [
   "/tmp",
   "/var/tmp",
   "/private/tmp",
-  "/private/var/tmp",
+  "/private/var/tmp"
 ]
 
 /// Validate that `path` is safe to read as a CA certificate file.
