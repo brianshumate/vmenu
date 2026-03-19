@@ -85,7 +85,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       "/opt/homebrew/sbin/vault",
       "/usr/local/sbin/vault",
       "\(home)/.local/bin/vault",
-      "/opt/local/bin/vault",
+      "/opt/local/bin/vault"
     ]
 
     for path in candidates where fileManager.isExecutableFile(atPath: path) {
@@ -116,7 +116,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       "/usr/bin",
       "/usr/sbin",
       "/bin",
-      "/sbin",
+      "/sbin"
     ].joined(separator: ":")
 
     let task = Process()
