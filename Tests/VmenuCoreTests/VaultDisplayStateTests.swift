@@ -39,14 +39,14 @@ final class VaultDisplayStateTests: XCTestCase {
   }
 
   func testStoppedSwiftUIColorIsRed() {
-    XCTAssertEqual(VaultDisplayState.stopped.swiftUIColor, .red)
+    XCTAssertEqual(VaultDisplayState.stopped.swiftUIColor, Color(nsColor: .systemRed))
   }
 
   func testSealedSwiftUIColorIsOrange() {
-    XCTAssertEqual(VaultDisplayState.sealed.swiftUIColor, .orange)
+    XCTAssertEqual(VaultDisplayState.sealed.swiftUIColor, Color(nsColor: .systemOrange))
   }
 
   func testRunningSwiftUIColorIsGreen() {
-    XCTAssertEqual(VaultDisplayState.running.swiftUIColor, .green)
+    XCTAssertEqual(VaultDisplayState.running.swiftUIColor, Color(nsColor: .systemGreen))
   }
 }
