@@ -585,7 +585,7 @@ class VaultManager: ObservableObject {
             hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
             hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
             hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
         ])
 
         window.center()
