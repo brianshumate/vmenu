@@ -1226,11 +1226,11 @@ struct VaultMenuView: View {
 
 struct AboutView: View {
   private let appVersion: String = {
-    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.15"
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.16"
   }()
 
   private let buildNumber: String = {
-    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.15"
+    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.16"
   }()
 
   var body: some View {
