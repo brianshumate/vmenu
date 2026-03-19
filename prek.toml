@@ -31,3 +31,11 @@ language = "system"
 entry = "swift build"
 pass_filenames = false
 always_run = true
+
+[[repos.hooks]]
+id = "conventional-commit"
+name = "conventional commit"
+language = "script"
+entry = "scripts/check-conventional-commit.sh"
+stages = ["commit-msg"]
+always_run = true
