@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- White triangle outline — hard clean edges for Liquid Glass highlights -->
+  <!-- White triangle outline — hard clean edges for Liquid Glass highlights.
+       stroke-opacity reduced to 0.85 so system specular highlights read through cleanly. -->
   <polygon
     points="173,200 850,200 512,850"
     fill="none"
     stroke="#FFFFFF"
+    stroke-opacity="0.85"
     stroke-width="28"
     stroke-linejoin="round"
   />
-  <!-- Green status dot — solid fill, centered in triangle -->
-  <circle cx="512" cy="402" r="71" fill="#6ED66B"/>
+  <!-- Green status dot — vivid #52DE52 for stronger small-size pop vs darker midground -->
+  <circle cx="512" cy="402" r="71" fill="#52DE52"/>
 </svg>

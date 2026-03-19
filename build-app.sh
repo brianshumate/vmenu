@@ -68,18 +68,54 @@ cp "${SCRIPT_DIR}/vmenuhelper/${HELPER_NAME}.plist" \
 # PkgInfo — standard for all macOS .app bundles
 printf 'APPL????' > "${APP_DIR}/Contents/PkgInfo"
 
-# Copy icon (.icns for legacy support)
-if [ -f "${SCRIPT_DIR}/vmenu/AppIcon.icns" ]; then
-    cp "${SCRIPT_DIR}/vmenu/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
-    echo "Included app icon (.icns)."
+# ── App icon ─────────────────────────────────────────────────────────────────
+# Generate AppIcon.icns from source SVG layers at build time.
+# All sizes are rendered from vmenu/icon-layers/variants/default.svg so the
+# .icns always matches the asset catalog default variant without manual upkeep.
+ICON_SRC="${SCRIPT_DIR}/vmenu/icon-layers/variants/default.svg"
+ICONSET_DIR="${SCRIPT_DIR}/vmenu/AppIcon.iconset"
+ICNS_OUT="${APP_DIR}/Contents/Resources/AppIcon.icns"
+
+if [ -f "${ICON_SRC}" ] && command -v rsvg-convert &>/dev/null && command -v iconutil &>/dev/null; then
+    echo "Building AppIcon.icns from source SVG layers..."
+    rm -rf "${ICONSET_DIR}"
+    mkdir -p "${ICONSET_DIR}"
+
+    _render_icon() {
+        local name="$1" px="$2"
+        rsvg-convert --width "${px}" --height "${px}" --keep-aspect-ratio \
+            --output "${ICONSET_DIR}/${name}" "${ICON_SRC}"
+        # Tag with sRGB profile
+        sips --matchTo '/System/Library/ColorSync/Profiles/sRGB Profile.icc' \
+            "${ICONSET_DIR}/${name}" --out "${ICONSET_DIR}/${name}" 2>/dev/null || true
+    }
+
+    _render_icon "icon_16x16.png"      16
+    _render_icon "icon_16x16@2x.png"   32
+    _render_icon "icon_32x32.png"      32
+    _render_icon "icon_32x32@2x.png"   64
+    _render_icon "icon_128x128.png"    128
+    _render_icon "icon_128x128@2x.png" 256
+    _render_icon "icon_256x256.png"    256
+    _render_icon "icon_256x256@2x.png" 512
+    _render_icon "icon_512x512.png"    512
+    _render_icon "icon_512x512@2x.png" 1024
+
+    iconutil --convert icns --output "${ICNS_OUT}" "${ICONSET_DIR}"
+    rm -rf "${ICONSET_DIR}"
+    echo "Included app icon (.icns, built from SVG layers)."
+elif [ -f "${SCRIPT_DIR}/vmenu/AppIcon.icns" ]; then
+    # Fallback: use pre-built .icns if rsvg-convert / iconutil are unavailable
+    cp "${SCRIPT_DIR}/vmenu/AppIcon.icns" "${ICNS_OUT}"
+    echo "Included app icon (.icns, pre-built fallback — install rsvg-convert for source-derived builds)."
 else
-    echo "Warning: AppIcon.icns not found, app will use default icon."
+    echo "Warning: AppIcon.icns not found and rsvg-convert unavailable. App will use default icon."
 fi
 
-# Copy asset catalog if present (for CFBundleIconName / modern icon support)
+# Copy asset catalog (CFBundleIconName / appearance-variant icon support)
 if [ -d "${SCRIPT_DIR}/vmenu/Assets.xcassets" ]; then
     cp -R "${SCRIPT_DIR}/vmenu/Assets.xcassets" "${APP_DIR}/Contents/Resources/Assets.xcassets"
-    echo "Included asset catalog."
+    echo "Included asset catalog (default + dark + clear + tinted variants)."
 fi
 
 # ── Stamp version from git tag (if available) ────────────────────────────────

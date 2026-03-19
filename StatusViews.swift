@@ -11,6 +11,10 @@ struct StatusPopoverView: View {
   @State private var showRawOutput = false
   @State private var showUnsealKey = false
   @State private var unsealKeyCopied = false
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+  @ScaledMetric(relativeTo: .headline) private var heroIconCircleSize: CGFloat = 44
+  @ScaledMetric(relativeTo: .caption) private var eyeButtonSize: CGFloat = 24
 
   private var isSealed: Bool {
     status.sealed != "false"
@@ -34,63 +38,64 @@ struct StatusPopoverView: View {
       }
     }
     .frame(minWidth: 400, idealWidth: 520, minHeight: 400, idealHeight: 560)
-    .background(Color(nsColor: .windowBackgroundColor))
+    // No explicit background — the NSVisualEffectView (.windowBackground,
+    // .behindWindow) set up in showStatusWindow() provides the surface.
   }
 
   // MARK: - Hero Header
 
   private var heroHeader: some View {
-    ZStack {
-      // Subtle backdrop
-      LinearGradient(
-        colors: [Color(nsColor: .separatorColor).opacity(0.08), Color(nsColor: .separatorColor).opacity(0.02)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-      )
+    HStack(spacing: 14) {
+      // Icon
+      ZStack {
+        Circle()
+          .fill(Color(nsColor: .separatorColor).opacity(0.12))
+          .frame(width: heroIconCircleSize, height: heroIconCircleSize)
+        Image(systemName: "server.rack")
+          .font(.title3)
+          .fontWeight(.medium)
+          .foregroundStyle(.secondary)
+      }
 
-      HStack(spacing: 14) {
-        // Icon
-        ZStack {
-          Circle()
-            .fill(Color(nsColor: .separatorColor).opacity(0.12))
-            .frame(width: 44, height: 44)
-          Image(systemName: "server.rack")
-            .font(.title3)
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Vault Server Status")
+          .font(.headline)
+        HStack(spacing: 6) {
+          Text("v\(status.version)")
+            .font(.system(.caption, design: .monospaced))
             .fontWeight(.medium)
             .foregroundStyle(.secondary)
-        }
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text("Vault Server Status")
-            .font(.headline)
-          HStack(spacing: 6) {
-            Text("v\(status.version)")
-              .font(.system(.caption, design: .monospaced))
-              .fontWeight(.medium)
+          if status.buildDate != "-" {
+            Text("·")
+              .foregroundStyle(.quaternary)
+            Text(formatBuildDate(status.buildDate))
+              .font(.caption)
               .foregroundStyle(.secondary)
-            if status.buildDate != "-" {
-              Text("·")
-                .foregroundStyle(.quaternary)
-              Text(formatBuildDate(status.buildDate))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
           }
         }
-
-        Spacer()
-
-        sealStatusBadge
       }
-      .padding(.horizontal, 18)
-      .padding(.vertical, 14)
+
+      Spacer()
+
+      sealStatusBadge
     }
+    .padding(.horizontal, 18)
+    .padding(.vertical, 14)
     .frame(minHeight: 72)
+    // .ultraThinMaterial is visible in both Light and Dark Mode and adapts
+    // to Reduce Transparency and Increase Contrast automatically.
+    // Replaces the bespoke LinearGradient that was invisible in Dark Mode.
+    .background(reduceTransparency
+      ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
+      : AnyShapeStyle(.ultraThinMaterial))
   }
 
   private var sealStatusBadge: some View {
     let label = isSealed ? "Sealed" : "Unsealed"
     let icon = isSealed ? "lock.fill" : "lock.open.fill"
+    // Use the tuned asset-catalog status colors so the badge communicates
+    // seal state semantically and maintains contrast in both appearances.
+    let tint: Color = isSealed ? Color("StatusSealed") : Color("StatusRunning")
 
     return HStack(spacing: 6) {
       Image(systemName: icon)
@@ -100,15 +105,15 @@ struct StatusPopoverView: View {
         .font(.caption)
         .fontWeight(.semibold)
     }
-    .foregroundStyle(.secondary)
+    .foregroundStyle(tint)
     .padding(.horizontal, 12)
     .padding(.vertical, 7)
     .background(
       Capsule()
-        .fill(Color(nsColor: .separatorColor).opacity(0.12))
+        .fill(tint.opacity(0.12))
         .overlay(
           Capsule()
-            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.20), lineWidth: 0.5)
+            .strokeBorder(tint.opacity(0.25), lineWidth: 0.5)
         )
     )
   }
@@ -158,12 +163,12 @@ struct StatusPopoverView: View {
         MetricTile(
           label: "Key Shares",
           value: status.totalShares,
-          icon: "square.grid.3x3.fill"
+          icon: "person.3.fill"
         )
         MetricTile(
           label: "Threshold",
           value: status.threshold,
-          icon: "slider.horizontal.3"
+          icon: "number.square.fill"
         )
       }
     }
@@ -172,7 +177,7 @@ struct StatusPopoverView: View {
   // MARK: - Cluster Card
 
   private var clusterCard: some View {
-    CardView(title: "Cluster", icon: "circle.hexagongrid.fill") {
+    CardView(title: "Cluster", icon: "network") {
       VStack(spacing: 0) {
         if status.clusterName != "-" {
           ClusterDetailRow(
@@ -240,11 +245,12 @@ struct StatusPopoverView: View {
             Image(systemName: showUnsealKey ? "eye.slash.fill" : "eye.fill")
               .font(.caption)
               .foregroundStyle(.secondary)
-              .frame(width: 24, height: 24)
+              .frame(width: eyeButtonSize, height: eyeButtonSize)
               .contentShape(Rectangle())
           }
           .buttonStyle(.borderless)
           .help(showUnsealKey ? "Hide unseal key" : "Reveal unseal key")
+          .accessibilityLabel(showUnsealKey ? "Hide unseal key" : "Reveal unseal key")
 
           Button {
             copyToClipboard(unsealKey, autoExpire: true)
@@ -260,12 +266,15 @@ struct StatusPopoverView: View {
                 .font(.caption2)
                 .fontWeight(.medium)
             }
-            .foregroundStyle(unsealKeyCopied ? .green : .secondary)
+            .foregroundStyle(unsealKeyCopied ? AnyShapeStyle(Color("CopyConfirmation")) : AnyShapeStyle(.secondary))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(
               RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .separatorColor).opacity(0.15))
+                // .ultraThinMaterial for small button chips on a material surface.
+                .fill(reduceTransparency
+                  ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.25))
+                  : AnyShapeStyle(.ultraThinMaterial))
             )
           }
           .buttonStyle(.borderless)
@@ -274,10 +283,18 @@ struct StatusPopoverView: View {
       .padding(10)
       .background(
         RoundedRectangle(cornerRadius: 8)
-          .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
+          // .thinMaterial elevates this content block one step above the card
+          // surface; adapts automatically to all system appearance settings.
+          .fill(reduceTransparency
+            ? AnyShapeStyle(Color(nsColor: .textBackgroundColor))
+            : AnyShapeStyle(.thinMaterial))
           .overlay(
             RoundedRectangle(cornerRadius: 8)
-              .strokeBorder(Color(nsColor: .separatorColor).opacity(0.2), lineWidth: 0.5)
+              .strokeBorder(
+                Color(nsColor: .separatorColor)
+                  .opacity(colorSchemeContrast == .increased ? 0.5 : 0.2),
+                lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.5
+              )
           )
       )
     }
@@ -310,7 +327,9 @@ struct StatusPopoverView: View {
             .padding(.vertical, 4)
             .background(
               RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .separatorColor).opacity(0.15))
+                .fill(reduceTransparency
+                  ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.25))
+                  : AnyShapeStyle(.ultraThinMaterial))
             )
           }
           .buttonStyle(.borderless)
@@ -324,10 +343,16 @@ struct StatusPopoverView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .background(
             RoundedRectangle(cornerRadius: 8)
-              .fill(Color(nsColor: .textBackgroundColor).opacity(0.5))
+              .fill(reduceTransparency
+                ? AnyShapeStyle(Color(nsColor: .textBackgroundColor))
+                : AnyShapeStyle(.thinMaterial))
               .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                  .strokeBorder(Color(nsColor: .separatorColor).opacity(0.15), lineWidth: 0.5)
+                  .strokeBorder(
+                    Color(nsColor: .separatorColor)
+                      .opacity(colorSchemeContrast == .increased ? 0.5 : 0.15),
+                    lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.5
+                  )
               )
           )
       }
@@ -378,6 +403,10 @@ private struct CardView<Content: View>: View {
   var isExpanded: Binding<Bool>?
   @ViewBuilder let content: () -> Content
 
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+  @Environment(\.colorScheme) private var colorScheme
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       // Section header
@@ -400,11 +429,26 @@ private struct CardView<Content: View>: View {
     }
     .background(
       RoundedRectangle(cornerRadius: 12)
-        .fill(Color(nsColor: .controlBackgroundColor))
-        .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
+        // .regularMaterial is the semantic choice for content-layer cards:
+        // adapts to Reduce Transparency, Increase Contrast, and Dark Mode.
+        .fill(reduceTransparency
+          ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
+          : AnyShapeStyle(.regularMaterial))
+        // Shadow: suppress in Dark Mode where any shadow adds visual noise,
+        // and strengthen slightly in Light Mode for card lift perception.
+        .shadow(
+          color: Color(nsColor: .shadowColor)
+            .opacity(colorScheme == .dark ? 0.0 : 0.18),
+          radius: 3,
+          y: 1
+        )
         .overlay(
           RoundedRectangle(cornerRadius: 12)
-            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
+            .strokeBorder(
+              Color(nsColor: .separatorColor)
+                .opacity(colorSchemeContrast == .increased ? 0.6 : 0.3),
+              lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.5
+            )
         )
     )
   }
@@ -463,12 +507,18 @@ private struct MetricTile: View {
   let icon: String
 
   @ScaledMetric(relativeTo: .caption2) private var iconBoxSize: CGFloat = 28
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
   var body: some View {
     HStack(spacing: 8) {
       ZStack {
         RoundedRectangle(cornerRadius: 6)
-          .fill(Color(nsColor: .separatorColor).opacity(0.10))
+          // .ultraThinMaterial for the icon box so it separates from the tile
+          // background while still adapting to all system appearance settings.
+          .fill(reduceTransparency
+            ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.18))
+            : AnyShapeStyle(.ultraThinMaterial))
           .frame(width: iconBoxSize, height: iconBoxSize)
         Image(systemName: icon)
           .font(.caption)
@@ -493,10 +543,19 @@ private struct MetricTile: View {
     .padding(8)
     .background(
       RoundedRectangle(cornerRadius: 8)
-        .fill(Color(nsColor: .textBackgroundColor).opacity(0.4))
+        // .thinMaterial elevates the tile above the card's .regularMaterial,
+        // creating the intended two-level depth hierarchy within the content
+        // layer. Adapts automatically to Reduce Transparency and Increase Contrast.
+        .fill(reduceTransparency
+          ? AnyShapeStyle(Color(nsColor: .textBackgroundColor))
+          : AnyShapeStyle(.thinMaterial))
         .overlay(
           RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.12), lineWidth: 0.5)
+            .strokeBorder(
+              Color(nsColor: .separatorColor)
+                .opacity(colorSchemeContrast == .increased ? 0.4 : 0.12),
+              lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.5
+            )
         )
     )
   }
@@ -598,7 +657,7 @@ struct StatusItemView: View {
     .padding(10)
     .background(
       RoundedRectangle(cornerRadius: 8)
-        .fill(Color(nsColor: .controlBackgroundColor))
+        .fill(.regularMaterial)
     )
   }
 }
@@ -616,11 +675,13 @@ struct StatusErrorView: View {
 
       ZStack {
         Circle()
-          .fill(Color(nsColor: .separatorColor).opacity(0.10))
+          // .ultraThinMaterial for the icon backdrop: visible in all
+          // appearances and adapts to Reduce Transparency automatically.
+          .fill(.ultraThinMaterial)
           .frame(width: iconCircleSize, height: iconCircleSize)
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.title)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(Color(nsColor: .systemOrange))
       }
 
       VStack(spacing: 6) {
@@ -651,6 +712,7 @@ struct StatusErrorView: View {
     }
     .padding(30)
     .frame(minWidth: 340, idealWidth: 340, minHeight: 280)
-    .background(Color(nsColor: .windowBackgroundColor))
+    // No explicit background — the NSVisualEffectView (.windowBackground,
+    // .behindWindow) set up in showStatusWindow() provides the surface.
   }
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DEFAULT variant — primary full-colour design -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#363742"/>
+      <stop offset="100%" stop-color="#252630"/>
+    </linearGradient>
+    <radialGradient id="cg" cx="50%" cy="38%" r="50%">
+      <stop offset="0%" stop-color="#2E4033" stop-opacity="0.70"/>
+      <stop offset="100%" stop-color="#1E2E22" stop-opacity="0.60"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="512" cy="420" r="190" fill="url(#cg)"/>
+  <polygon points="173,200 850,200 512,850"
+    fill="none" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="28" stroke-linejoin="round"/>
+  <circle cx="512" cy="402" r="71" fill="#52DE52"/>
+</svg>

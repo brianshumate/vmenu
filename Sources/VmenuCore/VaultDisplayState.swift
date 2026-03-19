@@ -16,10 +16,20 @@ public enum VaultDisplayState {
   }
 
   public var swiftUIColor: Color {
+    // Use NSColor.system* so the color adapts between light and dark
+    // appearances — matching the behaviour of dotColor above — rather
+    // than resolving to a fixed sRGB value as Color.red/.orange/.green do.
+    //
+    // The app target additionally defines named asset-catalog colors
+    // (StatusStopped / StatusSealed / StatusRunning) with four variants
+    // each (light, dark, light-high-contrast, dark-high-contrast).
+    // Those are loaded by the UI layer via Color("StatusRunning") etc.
+    // Here we use the NSColor dynamic equivalents so this model type
+    // remains independent of the app bundle's asset catalog.
     switch self {
-    case .stopped: return .red
-    case .sealed: return .orange
-    case .running: return .green
+    case .stopped: return Color(nsColor: .systemRed)
+    case .sealed:  return Color(nsColor: .systemOrange)
+    case .running: return Color(nsColor: .systemGreen)
     }
   }
 
