@@ -1267,7 +1267,7 @@ private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSIma
   let size = NSSize(width: 18, height: 16)
 
   func trianglePath(in rect: NSRect) -> NSBezierPath {
-    let inset: CGFloat = 1.5
+    let inset: CGFloat = 3.0
     let path = NSBezierPath()
     path.move(to: NSPoint(x: inset, y: rect.maxY - inset))
     path.line(to: NSPoint(x: rect.maxX - inset, y: rect.maxY - inset))
@@ -1283,8 +1283,8 @@ private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSIma
     NSColor.labelColor.setStroke()
     path.stroke()
 
-    let dotRadius: CGFloat = 2.5
-    let inset: CGFloat = 1.5
+    let dotRadius: CGFloat = 2.0
+    let inset: CGFloat = 3.0
     let centroidY = ((rect.maxY - inset) * 2 + inset) / 3.0
     let dotCenter = NSPoint(x: rect.midX, y: centroidY)
     let dotRect = NSRect(
