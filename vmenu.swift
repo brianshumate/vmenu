@@ -544,12 +544,12 @@ class VaultManager: ObservableObject {
     }
 
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
+      contentRect: NSRect(x: 0, y: 0, width: 540, height: 580),
       styleMask: [.titled, .closable, .miniaturizable],
       backing: .buffered,
       defer: false
     )
-    window.title = "Vault server status"
+    window.title = "Vault Server Status"
     window.contentView = contentView
     window.center()
     window.isReleasedWhenClosed = false
@@ -1264,7 +1264,7 @@ struct AboutView: View {
 
 /// Dynamic menu bar image (red: stopped, orange: sealed, green: unsealed).
 private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSImage {
-  let size = NSSize(width: 18, height: 16)
+  let size = NSSize(width: 20, height: 18)
 
   func trianglePath(in rect: NSRect) -> NSBezierPath {
     let inset: CGFloat = 3.0
