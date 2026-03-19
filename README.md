@@ -125,10 +125,10 @@ vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main 
 
 The app uses a two-process architecture for separation of concerns and defense in depth.
 
-| Component | Bundle path | Sandbox | Role |
+| Component | Binary | Sandbox | Role |
 |---|---|---|---|
-| **Main app** (vmenu) | Contents/MacOS/vmenu | Sandboxed | UI, Vault HTTP API polling, clipboard |
-| **XPC helper** (com.brianshumate.vmenu.helper) | Contents/MacOS/com.brianshumate.vmenu.helper | Unsandboxed | launchctl, plist/log file I/O, vault binary discovery |
+| **Main app** | vmenu | Sandboxed | UI, Vault HTTP API polling, clipboard |
+| **XPC helper** | com.brianshumate.vmenu.helper | Unsandboxed | launchctl, plist/log file I/O, vault binary discovery |
 
 The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice) at launch. launchd starts the helper on demand when the main app connects to its Mach service over XPC. The helper manages the Vault dev server through a LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` subcommands.
 
