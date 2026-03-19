@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CLEAR DARK variant — subdued dark appearance, core features remain recognizable.
+     Deep navy background. Muted green. Triangle at reduced opacity. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2A2D38"/>
+      <stop offset="100%" stop-color="#1E2130"/>
+    </linearGradient>
+    <radialGradient id="cg" cx="50%" cy="38%" r="50%">
+      <stop offset="0%" stop-color="#1A2A30" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#101820" stop-opacity="0.55"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="512" cy="420" r="190" fill="url(#cg)"/>
+  <polygon points="173,200 850,200 512,850"
+    fill="none" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="28" stroke-linejoin="round"/>
+  <circle cx="512" cy="402" r="71" fill="#4DBD4B"/>
+</svg>

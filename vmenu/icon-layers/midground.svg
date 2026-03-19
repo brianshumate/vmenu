@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="cg" cx="50%" cy="38%" r="50%">
+      <stop offset="0%" stop-color="#2E4033" stop-opacity="0.70"/>
+      <stop offset="100%" stop-color="#1E2E22" stop-opacity="0.60"/>
+    </radialGradient>
+  </defs>
+  <!-- Translucent dark circle — darker than before so green dot pops at small sizes.
+       Varied opacity for Liquid Glass depth. Renamed from circle.svg to midground.svg. -->
+  <circle cx="512" cy="420" r="190" fill="url(#cg)"/>
+</svg>

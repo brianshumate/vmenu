@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DARK variant — complementary colors reflecting default design.
+     Colored background (deep blue-teal) for contrast in dark appearance.
+     Slightly brighter green for vivid contrast without being harsh. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2D3B4A"/>
+      <stop offset="100%" stop-color="#1E2B38"/>
+    </linearGradient>
+    <radialGradient id="cg" cx="50%" cy="38%" r="50%">
+      <stop offset="0%" stop-color="#1E3040" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#131E2C" stop-opacity="0.62"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="512" cy="420" r="190" fill="url(#cg)"/>
+  <polygon points="173,200 850,200 512,850"
+    fill="none" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="28" stroke-linejoin="round"/>
+  <circle cx="512" cy="402" r="71" fill="#5AE85A"/>
+</svg>
