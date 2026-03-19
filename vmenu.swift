@@ -515,10 +515,11 @@ class VaultManager: ObservableObject {
       defer: false
     )
     window.title = "About vmenu"
+    window.minSize = NSSize(width: 280, height: 260)
     window.contentView = contentView
     window.center()
     window.isReleasedWhenClosed = false
-    window.level = .statusBar
+    window.level = .floating
     window.makeKeyAndOrderFront(nil)
     activateApp()
 
@@ -545,15 +546,16 @@ class VaultManager: ObservableObject {
 
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 540, height: 580),
-      styleMask: [.titled, .closable, .miniaturizable],
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
     )
     window.title = "Vault Server Status"
+    window.minSize = NSSize(width: 400, height: 400)
     window.contentView = contentView
     window.center()
     window.isReleasedWhenClosed = false
-    window.level = .statusBar
+    window.level = .floating
     window.makeKeyAndOrderFront(nil)
     activateApp()
 
@@ -737,6 +739,7 @@ struct MenuRowButton: View {
   var shortcut: String? = nil
   let action: () -> Void
 
+  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 20
   @State private var isHovered = false
   @Environment(\.isEnabled) private var isEnabled
 
@@ -744,14 +747,14 @@ struct MenuRowButton: View {
     Button(action: action) {
       HStack(spacing: 8) {
         Image(systemName: icon)
-          .font(.system(size: 12))
-          .frame(width: 20)
+          .font(.caption)
+          .frame(width: iconWidth)
         Text(title)
-          .font(.system(size: 13))
+          .font(.body)
         Spacer()
         if let shortcut {
           Text(shortcut)
-            .font(.system(size: 11))
+            .font(.caption)
             .foregroundColor(.secondary)
         }
       }
@@ -781,6 +784,7 @@ struct EnvCopyRowButton: View {
   @Binding var copyFeedback: String?
   let action: () -> Void
 
+  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 20
   @State private var isHovered = false
   @State private var isRevealed = false
 
@@ -797,15 +801,16 @@ struct EnvCopyRowButton: View {
       Button(action: action) {
         HStack(spacing: 8) {
           Image(systemName: "doc.on.clipboard")
-            .font(.system(size: 12))
+            .font(.caption)
             .foregroundColor(isHovered ? .white : .accentColor)
-            .frame(width: 20)
+            .frame(width: iconWidth)
           VStack(alignment: .leading, spacing: 1) {
             Text(label)
-              .font(.system(size: 12, weight: .medium))
+              .font(.caption)
+              .fontWeight(.medium)
               .foregroundColor(isHovered ? .white : .primary)
             Text(displayValue)
-              .font(.system(size: 10, design: .monospaced))
+              .font(.system(.caption2, design: .monospaced))
               .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
               .lineLimit(1)
               .truncationMode(.middle)
@@ -813,11 +818,12 @@ struct EnvCopyRowButton: View {
           Spacer()
           if copyFeedback == label {
             Image(systemName: "checkmark")
-              .font(.system(size: 10, weight: .bold))
+              .font(.caption2)
+              .fontWeight(.bold)
               .foregroundColor(isHovered ? .white : .green)
           } else {
             Text("Copy")
-              .font(.system(size: 10))
+              .font(.caption2)
               .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
           }
         }
@@ -831,7 +837,7 @@ struct EnvCopyRowButton: View {
           isRevealed.toggle()
         } label: {
           Image(systemName: isRevealed ? "eye.slash" : "eye")
-            .font(.system(size: 10))
+            .font(.caption2)
             .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
         }
         .buttonStyle(.borderless)
@@ -904,73 +910,80 @@ struct VaultMenuView: View {
       } else {
         headerSection
         Divider()
-          .padding(.horizontal, 12)
+          .padding(.horizontal, 8)
         controlSection
         if vaultManager.isRunning {
           Divider()
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 8)
           environmentSection
         }
         Divider()
-          .padding(.horizontal, 12)
+          .padding(.horizontal, 8)
         quitSection
       }
     }
-    .frame(width: 360)
+    .frame(minWidth: 320, idealWidth: 360)
   }
 
   private var missingVaultView: some View {
-    VStack(spacing: 12) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 32))
-        .foregroundColor(.orange)
+    VStack(spacing: 0) {
+      VStack(spacing: 12) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.largeTitle)
+          .foregroundColor(.orange)
 
-      Text("Vault Not Installed")
-        .font(.headline)
-        .fontWeight(.bold)
+        Text("Vault Not Installed")
+          .font(.headline)
+          .fontWeight(.bold)
 
-      Text("The vault binary was not found in your PATH.\nInstall it with Homebrew:")
-        .font(.caption)
-        .foregroundColor(.secondary)
-        .multilineTextAlignment(.center)
+        Text("The vault binary was not found in your PATH.\nInstall it with Homebrew:")
+          .font(.caption)
+          .foregroundColor(.secondary)
+          .multilineTextAlignment(.center)
 
-      Text("brew install hashicorp/tap/vault")
-        .font(.system(.caption, design: .monospaced))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(
-          RoundedRectangle(cornerRadius: 6)
-            .fill(Color(nsColor: .textBackgroundColor))
-        )
+        Text("brew install hashicorp/tap/vault")
+          .font(.system(.caption, design: .monospaced))
+          .padding(.horizontal, 10)
+          .padding(.vertical, 4)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .fill(Color(nsColor: .textBackgroundColor))
+          )
 
-      Button("Download from HashiCorp") {
-        if let url = URL(string: "https://developer.hashicorp.com/vault/tutorials/getting-started/getting-started-install") {
-          NSWorkspace.shared.open(url)
+        Button("Download from HashiCorp") {
+          if let url = URL(string: "https://developer.hashicorp.com/vault/tutorials/getting-started/getting-started-install") {
+            NSWorkspace.shared.open(url)
+          }
         }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
       }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.small)
+      .padding(16)
 
       Divider()
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 8)
 
-      menuButton(title: "Quit vmenu", icon: "power", shortcut: "⌘Q") {
-        NSApplication.shared.terminate(nil)
+      VStack(spacing: 2) {
+        menuButton(title: "Quit vmenu", icon: "power", shortcut: "⌘Q") {
+          NSApplication.shared.terminate(nil)
+        }
       }
+      .padding(.vertical, 4)
+      .padding(.horizontal, 4)
     }
-    .padding(16)
   }
 
   private var headerSection: some View {
     VStack(spacing: 0) {
       HStack(spacing: 10) {
         Image(systemName: "lock.shield.fill")
-          .font(.system(size: 22, weight: .semibold))
+          .font(.title2)
+          .fontWeight(.semibold)
           .foregroundColor(.secondary)
 
         VStack(alignment: .leading, spacing: 1) {
           Text("Vault dev mode server")
-            .font(.system(size: 14, weight: .bold))
+            .font(.headline)
             .foregroundColor(.primary)
         }
 
@@ -1046,7 +1059,8 @@ struct VaultMenuView: View {
         .frame(width: 8, height: 8)
         .shadow(color: stateColor.opacity(0.6), radius: 3)
       Text(label)
-        .font(.system(size: 11, weight: .semibold))
+        .font(.caption)
+        .fontWeight(.semibold)
     }
     .foregroundColor(.secondary)
     .padding(.horizontal, 10)
@@ -1060,14 +1074,17 @@ struct VaultMenuView: View {
   private func detailRow(label: String, value: String, icon: String) -> some View {
     HStack(spacing: 6) {
       Image(systemName: icon)
-        .font(.system(size: 10, weight: .medium))
+        .font(.caption2)
+        .fontWeight(.medium)
         .foregroundColor(.secondary)
         .frame(width: 14)
       Text(label)
-        .font(.system(size: 11, weight: .medium))
+        .font(.caption)
+        .fontWeight(.medium)
         .foregroundColor(.secondary)
       Text(value)
-        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .font(.system(.caption, design: .monospaced))
+        .fontWeight(.medium)
         .foregroundColor(.primary)
         .lineLimit(1)
       Spacer()
@@ -1077,9 +1094,10 @@ struct VaultMenuView: View {
   private func detailPill(label: String, icon: String) -> some View {
     HStack(spacing: 3) {
       Image(systemName: icon)
-        .font(.system(size: 9))
+        .font(.caption2)
       Text(label)
-        .font(.system(size: 10, weight: .medium))
+        .font(.caption2)
+        .fontWeight(.medium)
     }
     .foregroundColor(.secondary)
     .padding(.horizontal, 7)
@@ -1093,9 +1111,10 @@ struct VaultMenuView: View {
   private func sealStatusPill(sealed: Bool) -> some View {
     HStack(spacing: 3) {
       Image(systemName: sealed ? "lock.fill" : "lock.open.fill")
-        .font(.system(size: 9))
+        .font(.caption2)
       Text(sealed ? "Sealed" : "Unsealed")
-        .font(.system(size: 10, weight: .medium))
+        .font(.caption2)
+        .fontWeight(.medium)
     }
     .foregroundColor(.secondary)
     .padding(.horizontal, 7)
@@ -1216,20 +1235,22 @@ struct AboutView: View {
 
   var body: some View {
     VStack(spacing: 16) {
-      Image(systemName: "lock.shield.fill")
-        .font(.system(size: 48))
-        .foregroundColor(.accentColor)
+      Image(nsImage: NSApp.applicationIconImage)
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .frame(width: 64, height: 64)
 
       VStack(spacing: 4) {
         Text("vmenu")
-          .font(.system(size: 20, weight: .bold))
+          .font(.title2)
+          .fontWeight(.bold)
         Text("Version \(appVersion)" + (buildNumber != appVersion ? " (\(buildNumber))" : ""))
-          .font(.system(size: 12))
+          .font(.caption)
           .foregroundColor(.secondary)
       }
 
       Text("A macOS menu bar app for Vault.")
-        .font(.system(size: 12))
+        .font(.caption)
         .foregroundColor(.secondary)
         .multilineTextAlignment(.center)
         .lineSpacing(2)
@@ -1239,7 +1260,8 @@ struct AboutView: View {
 
       VStack(spacing: 4) {
         Text("Made with ❤️ and 🤖 by [Brian Shumate](https://brianshumate.com/)")
-          .font(.system(size: 11, weight: .medium))
+          .font(.caption)
+          .fontWeight(.medium)
           .foregroundColor(.primary)
           .tint(.primary)
 
@@ -1249,20 +1271,25 @@ struct AboutView: View {
           }
         }
         .buttonStyle(.link)
-        .font(.system(size: 11))
+        .font(.caption)
       }
 
       Text("MMXXVI.")
-        .font(.system(size: 10))
+        .font(.caption2)
         .foregroundColor(.secondary)
     }
     .padding(24)
-    .frame(width: 320)
+    .frame(minWidth: 280, idealWidth: 320)
     .background(Color(nsColor: .windowBackgroundColor))
   }
 }
 
 /// Dynamic menu bar image (red: stopped, orange: sealed, green: unsealed).
+///
+/// The triangle outline is drawn using `NSColor.labelColor` which adapts
+/// to light/dark menu bar automatically.  The colored status dot is drawn
+/// separately so the triangle respects system vibrancy while the dot
+/// retains its semantic color.
 private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSImage {
   let size = NSSize(width: 20, height: 18)
 
@@ -1278,11 +1305,21 @@ private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSIma
     return path
   }
 
-  let composite = NSImage(size: size, flipped: false) { rect in
+  // Draw the template triangle (adapts to light/dark automatically)
+  let triangleImage = NSImage(size: size, flipped: false) { rect in
     let path = trianglePath(in: rect)
-    NSColor.labelColor.setStroke()
+    NSColor.black.setStroke()
     path.stroke()
+    return true
+  }
+  triangleImage.isTemplate = true
 
+  // Composite: template triangle + colored dot overlay
+  let composite = NSImage(size: size, flipped: false) { rect in
+    // Draw the template triangle first
+    triangleImage.draw(in: rect)
+
+    // Draw the colored dot on top (non-template, retains color)
     let dotRadius: CGFloat = 2.0
     let inset: CGFloat = 3.0
     let centroidY = ((rect.maxY - inset) * 2 + inset) / 3.0

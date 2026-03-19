@@ -28,6 +28,8 @@ let package = Package(
         "share",
         "vmenu/Info.plist",
         "vmenu/AppIcon.icns",
+        "vmenu/Assets.xcassets",
+        "vmenu/icon-layers",
         "vmenu/vmenu.entitlements",
         "vmenuhelper/Info.plist",
         "vmenuhelper/vmenuhelper.entitlements",
