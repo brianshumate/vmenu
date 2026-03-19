@@ -44,6 +44,16 @@
 - **launchd integration** — manages Vault through a proper LaunchAgent.
 - **Keyboard shortcuts** for every action (⌘S, ⌘R, ⌘I, ⌘Q).
 
+### Menu bar icon
+
+The menu bar icon reflects the current server state:
+
+| Icon color | State |
+|---|---|
+| 🟢 Green | Vault is unsealed and ready |
+| 🟠 Orange | Vault is sealed |
+| 🔴 Red | Vault is stopped |
+
 ## Prerequisites
 
 vmenu needs the `vault` binary installed and available in your `PATH`.
@@ -149,16 +159,6 @@ All operations that the App Sandbox forbids are exposed through the `VmenuHelper
 | `readStartupLog` / `recreateStartupLog` | Read/reset log files for environment variable parsing |
 | `readCACertData` | Read CA certificate bytes for TLS trust evaluation |
 | `removeCACertFile` | Clean up stale dev-mode CA certificates |
-
-### Menu bar icon
-
-The menu bar icon reflects the current server state:
-
-| Icon color | State |
-|---|---|
-| 🟢 Green | Vault is unsealed and ready |
-| 🟠 Orange | Vault is sealed |
-| 🔴 Red | Vault is stopped |
 
 ## Security model
 
