@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent plist for the vmenu XPC helper.
+
+  This file is embedded in the main app bundle at:
+    Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist
+
+  SMAppService.agent(plistName:) reads this to register the helper with
+  launchd. The MachServices key exposes the XPC endpoint that the
+  sandboxed main app connects to.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.brianshumate.vmenu.helper</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/com.brianshumate.vmenu.helper</string>
+    <key>MachServices</key>
+    <dict>
+        <key>com.brianshumate.vmenu.helper</key>
+        <true/>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+</dict>
+</plist>

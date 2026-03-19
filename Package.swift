@@ -12,9 +12,14 @@ let package = Package(
       dependencies: [],
       path: "Sources/VmenuCore"
     ),
+    .target(
+      name: "VmenuXPCProtocol",
+      dependencies: [],
+      path: "Sources/VmenuXPCProtocol"
+    ),
     .executableTarget(
       name: "vmenu",
-      dependencies: ["VmenuCore"],
+      dependencies: ["VmenuCore", "VmenuXPCProtocol"],
       path: ".",
       exclude: [
         "LICENSE",
@@ -24,12 +29,20 @@ let package = Package(
         "vmenu/Info.plist",
         "vmenu/AppIcon.icns",
         "vmenu/vmenu.entitlements",
+        "vmenuhelper/Info.plist",
+        "vmenuhelper/vmenuhelper.entitlements",
+        "vmenuhelper/com.brianshumate.vmenu.helper.plist",
         "Sources",
         "Tests",
         "build-app.sh",
         "vmenu.app"
       ],
       sources: ["vmenu.swift", "StatusViews.swift"]
+    ),
+    .executableTarget(
+      name: "vmenu-helper",
+      dependencies: ["VmenuCore", "VmenuXPCProtocol"],
+      path: "Sources/VmenuHelper"
     ),
     .testTarget(
       name: "VmenuCoreTests",

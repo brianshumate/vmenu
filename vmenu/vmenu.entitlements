@@ -1,45 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  vmenu.entitlements — App Sandbox rationale
+  vmenu.entitlements — Fully sandboxed main app
 
-  The App Sandbox is intentionally disabled because vmenu requires
-  capabilities that are incompatible with the sandbox:
+  The main menu-bar app now runs fully sandboxed. All operations that the
+  App Sandbox forbids (process spawning, file I/O outside the container)
+  are delegated to the XPC helper agent (com.brianshumate.vmenu.helper),
+  which runs outside the sandbox and is registered via SMAppService.
 
-  1. Process spawning (NSTask / Process):
-     vmenu executes /bin/launchctl to bootstrap, bootout, kickstart,
-     and inspect the Vault LaunchAgent service.  It also runs
-     /usr/bin/which to locate the vault binary.  The App Sandbox does
-     not permit process spawning via posix_spawn / NSTask; there is
-     no entitlement to allow it.
-
-  2. File system access outside the sandbox container:
-     vmenu reads and writes ~/Library/LaunchAgents/com.hashicorp.vault.plist
-     to manage the Vault LaunchAgent lifecycle.  It also reads CA
-     certificate files at user-specified paths and Vault log files.
-
-  3. Outbound network connections:
-     vmenu polls the local Vault server's /v1/sys/seal-status endpoint
-     over HTTPS (typically https://127.0.0.1:8200).
-
-  To enable sandboxing, the architecture would need to change to use
-  a privileged XPC helper (SMAppService / SMJobBless) for launchctl
-  operations and file writes outside the container, while keeping the
-  menu-bar UI in a sandboxed main app.  This is tracked as a future
-  improvement.
-
-  Defense-in-depth mitigations currently in place:
-  - Hardened Runtime is enabled (see code-signing flags).
-  - Allow-unsigned-executable-memory is explicitly disabled.
-  - Library validation is not disabled (only signed libraries load).
-  - All network requests use ephemeral URLSession (no credential caching).
-  - CA certificate paths are validated against symlink and traversal attacks.
-  - The app has no document types, URL schemes, or IPC surface.
+  Entitlements:
+  - com.apple.security.app-sandbox:  ENABLED — full sandbox.
+  - com.apple.security.network.client:  Outbound connections to the local
+    Vault HTTPS endpoint (127.0.0.1:8200).
+  - Hardened Runtime protections remain active.
 -->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.app-sandbox</key>
-    <false/>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <false/>
     <key>com.apple.security.cs.disable-library-validation</key>

@@ -1,4 +1,5 @@
 import SwiftUI
+import VmenuCore
 
 struct StatusPopoverView: View {
   let status: VaultStatus
