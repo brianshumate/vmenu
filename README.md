@@ -117,6 +117,21 @@ The menu bar icon reflects the current server state:
 | 🟠 Orange | Vault is sealed |
 | 🔴 Red | Vault is stopped |
 
+## Security model
+
+vmenu runs _without the App Sandbox_ because it needs to spawn `launchctl` processes and write to `~/Library/LaunchAgents/`, and these are operations the sandbox does not permit. The rationale and mitigation are documented in [`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements).
+
+That said vmenu does follow defense-in-depth with the following measures:
+
+- **Hardened runtime** enabled for all release builds.
+- **Explicitly disabled unsigned executable memory** and **library validation bypass**.
+- **Ephemeral `URLSession`** use, so no credentials get cached to disk.
+- **CA certificate path validation** rejects symlinks, traversal, and paths outside allowed directories.
+- **Minimal attack surface**, and no document types, URL schemes, XPC services, or IPC endpoints.
+
+> [!NOTE]
+> A future architectural improvement can move `launchctl` operations into a sandboxed XPC helper (via `SMAppService`), allowing the main menu-bar app to run fully sandboxed.
+
 ## AI use disclaimer
 
 This codebase has been built with the support of coding agents.

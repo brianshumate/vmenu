@@ -2,6 +2,7 @@ import AppKit
 import Security
 import SwiftUI
 import UserNotifications
+import VmenuCore
 
 /// Lightweight HTTP client for the Vault REST API.
 ///
@@ -81,13 +82,34 @@ class VaultHTTPClient: NSObject, URLSessionDelegate {
       return
     }
 
-    // If we have a CA cert path, load it and set it as the trust anchor.
-    if !caCertPath.isEmpty,
-       let certData = try? Data(contentsOf: URL(fileURLWithPath: caCertPath)),
-       let cert = loadCertificate(from: certData) {
-      SecTrustSetAnchorCertificates(serverTrust, [cert] as CFArray)
-      SecTrustSetAnchorCertificatesOnly(serverTrust, true)
+    // When no CA cert path is configured, fail closed: reject the
+    // connection rather than falling through to the system trust store.
+    // Vault dev-mode TLS certs are not in the system store, so this
+    // prevents silent fallback that could mask configuration errors.
+    guard !caCertPath.isEmpty else {
+      completionHandler(.cancelAuthenticationChallenge, nil)
+      return
     }
+
+    // Validate the CA cert path before reading it.  Reject symlinks,
+    // paths inside world-writable directories, and non-regular files
+    // to prevent symlink-based MITM attacks.
+    guard validateCACertPath(caCertPath) else {
+      print("vmenu: CA cert path failed validation — rejecting TLS challenge")
+      completionHandler(.cancelAuthenticationChallenge, nil)
+      return
+    }
+
+    guard let certData = try? Data(contentsOf: URL(fileURLWithPath: caCertPath)),
+          let cert = loadCertificate(from: certData)
+    else {
+      print("vmenu: failed to load CA certificate — rejecting TLS challenge")
+      completionHandler(.cancelAuthenticationChallenge, nil)
+      return
+    }
+
+    SecTrustSetAnchorCertificates(serverTrust, [cert] as CFArray)
+    SecTrustSetAnchorCertificatesOnly(serverTrust, true)
 
     var error: CFError?
     if SecTrustEvaluateWithError(serverTrust, &error) {
@@ -96,6 +118,24 @@ class VaultHTTPClient: NSObject, URLSessionDelegate {
       completionHandler(.cancelAuthenticationChallenge, nil)
     }
   }
+
+  // MARK: - CA Certificate Path Validation
+
+  /// Validate that `path` is safe to read as a CA certificate.
+  ///
+  /// Delegates to `VmenuCore.validateCACertPath(_:)` which checks that the
+  /// path is absolute, not in a world-writable directory, not a symlink,
+  /// is a regular file, is owned by the current user or root, and is not
+  /// group- or world-writable.
+  func validateCACertPath(_ path: String) -> Bool {
+    let result = VmenuCore.validateCACertPath(path)
+    if !result {
+      print("vmenu: CA cert path failed validation: \(path)")
+    }
+    return result
+  }
+
+  // MARK: - Certificate Loading
 
   /// Load a DER or PEM certificate from raw data.
   private func loadCertificate(from data: Data) -> SecCertificate? {
@@ -278,6 +318,10 @@ class VaultManager: ObservableObject {
   /// connection pool stays warm.
   private let httpClient = VaultHTTPClient()
 
+  /// Window references for status and about panels.
+  var statusWindow: NSWindow?
+  var aboutWindow: NSWindow?
+
   /// Is Vault sealed?
   var isSealed: Bool {
     guard let status = parsedStatus else { return true }
@@ -288,6 +332,141 @@ class VaultManager: ObservableObject {
   nonisolated private var plistURL: URL {
     FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/LaunchAgents/com.hashicorp.vault.plist")
+  }
+
+  /// User-private log directory under ~/Library/Logs/vmenu.
+  ///
+  /// Using a directory inside the user's home avoids the world-writable
+  /// `/tmp` directory, which is susceptible to symlink attacks and
+  /// information disclosure from other local users.
+  nonisolated private var logDir: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/Logs/vmenu")
+  }
+
+  /// Path to the Vault startup log (environment variables, tokens, etc.).
+  nonisolated private var startupLogURL: URL {
+    logDir.appendingPathComponent("vault.startup.log")
+  }
+
+  /// Path to the Vault stderr / operations log.
+  nonisolated private var operationsLogURL: URL {
+    logDir.appendingPathComponent("vault.operations.log")
+  }
+
+  /// Create the log directory with owner-only permissions (0700) if it does
+  /// not already exist.  Returns `true` on success.
+  @discardableResult
+  nonisolated private func ensureLogDirectory() -> Bool {
+    let fileManager = FileManager.default
+    var isDir: ObjCBool = false
+    if fileManager.fileExists(atPath: logDir.path, isDirectory: &isDir) {
+      return isDir.boolValue
+    }
+    do {
+      try fileManager.createDirectory(
+        at: logDir,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
+      return true
+    } catch {
+      print("vmenu: failed to create log directory: \(error.localizedDescription)")
+      return false
+    }
+  }
+
+  /// Verify that the file at `path` is a regular file (not a symlink or
+  /// other special file).  Uses `lstat()` so the check is not
+  /// dereferenced through symlinks.
+  nonisolated private func isRegularFile(atPath path: String) -> Bool {
+    var statBuf = stat()
+    guard lstat(path, &statBuf) == 0 else { return false }
+    return (statBuf.st_mode & S_IFMT) == S_IFREG
+  }
+
+  /// Safely read the contents of a log file after verifying it is a regular
+  /// file (not a symlink).  Returns `nil` if the file does not exist or
+  /// fails the safety check.
+  nonisolated private func safeReadLogFile(at url: URL) -> String? {
+    let path = url.path
+    guard FileManager.default.fileExists(atPath: path) else { return nil }
+    guard isRegularFile(atPath: path) else {
+      print("vmenu: refusing to read \(path) — not a regular file")
+      return nil
+    }
+    return try? String(contentsOf: url, encoding: .utf8)
+  }
+
+  /// Safely write (or truncate) a log file with owner-only permissions
+  /// (0600).  Refuses to write if the path already exists as a symlink or
+  /// other non-regular file.
+  nonisolated private func safeWriteLogFile(at url: URL, contents: String) {
+    let path = url.path
+    let fileManager = FileManager.default
+
+    // If the file already exists, verify it is a regular file.
+    if fileManager.fileExists(atPath: path) {
+      guard isRegularFile(atPath: path) else {
+        print("vmenu: refusing to write \(path) — not a regular file")
+        return
+      }
+    }
+
+    // Write atomically, then set restrictive permissions.
+    do {
+      try contents.write(to: url, atomically: true, encoding: .utf8)
+      try fileManager.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: path
+      )
+    } catch {
+      print("vmenu: failed to write \(path): \(error.localizedDescription)")
+    }
+  }
+
+  /// Atomically replace (or create) a log file to close the TOCTOU race
+  /// window between truncation and Vault startup.
+  ///
+  /// Instead of truncating in-place (which leaves a gap where another
+  /// process could inject content), this method:
+  ///
+  /// 1. Removes the existing file (after verifying it is regular).
+  /// 2. Creates a new empty file with `O_CREAT | O_EXCL | O_WRONLY` and
+  ///    owner-only permissions (0600), which fails if the path was
+  ///    recreated (e.g. as a symlink) between the remove and open.
+  ///
+  /// Returns `true` on success, `false` if the operation failed.
+  @discardableResult
+  nonisolated private func safeRecreateLogFile(at url: URL) -> Bool {
+    let path = url.path
+    let fileManager = FileManager.default
+
+    // If the file already exists, verify it is regular before removing.
+    if fileManager.fileExists(atPath: path) {
+      guard isRegularFile(atPath: path) else {
+        print("vmenu: refusing to recreate \(path) — not a regular file")
+        return false
+      }
+      do {
+        try fileManager.removeItem(atPath: path)
+      } catch {
+        print("vmenu: failed to remove \(path): \(error.localizedDescription)")
+        return false
+      }
+    }
+
+    // Create exclusively — O_EXCL makes this fail if the path was
+    // recreated between the remove above and this open, closing the
+    // TOCTOU window against symlink attacks.
+    let fileDescriptor = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
+    guard fileDescriptor >= 0 else {
+      let err = String(cString: strerror(errno))
+      print("vmenu: exclusive create of \(path) failed: \(err)")
+      return false
+    }
+    close(fileDescriptor)
+    return true
   }
 
   /// The launchd domain target for the current user, e.g. "gui/501"
@@ -324,7 +503,16 @@ class VaultManager: ObservableObject {
   private func removeCACertFile() {
     let path = vaultCACert
     guard !path.isEmpty else { return }
-    try? FileManager.default.removeItem(atPath: path)
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    guard isRegularFile(atPath: path) else {
+      print("vmenu: refusing to remove \(path) — not a regular file")
+      return
+    }
+    do {
+      try FileManager.default.removeItem(atPath: path)
+    } catch {
+      print("vmenu: failed to remove CA cert \(path): \(error.localizedDescription)")
+    }
   }
 
   /// Run a launchctl subcommand and return (success, terminationStatus).
@@ -513,7 +701,6 @@ class VaultManager: ObservableObject {
             <string>\(vaultPath)</string>
             <string>server</string>
             <string>-dev</string>
-            <string>-dev-root-token-id=root</string>
             <string>-dev-tls</string>
         </array>
         <key>RunAtLoad</key>
@@ -521,34 +708,74 @@ class VaultManager: ObservableObject {
         <key>KeepAlive</key>
         <false/>
         <key>StandardOutPath</key>
-        <string>/tmp/vault.startup.log</string>
+        <string>\(startupLogURL.path)</string>
         <key>StandardErrorPath</key>
-        <string>/tmp/vault.operations.log</string>
+        <string>\(operationsLogURL.path)</string>
     </dict>
     </plist>
     """
   }
 
-  nonisolated private func createOrUpdatePlist() {
+  /// Create or update the LaunchAgent plist, returning `true` on success.
+  ///
+  /// Returns `false` if any step fails (log directory creation, LaunchAgents
+  /// directory creation, plist write, or permission hardening) so the caller
+  /// can abort rather than proceeding with a stale or missing plist.
+  @discardableResult
+  nonisolated private func createOrUpdatePlist() -> Bool {
+    // Ensure the log directory exists with restrictive permissions before
+    // writing a plist that references it.
+    guard ensureLogDirectory() else {
+      print("vmenu: aborting plist creation — log directory unavailable")
+      return false
+    }
+
     let plistContent = expectedPlistContent()
 
     let launchAgentsDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/LaunchAgents")
-    try? FileManager.default.createDirectory(
-      at: launchAgentsDir,
-      withIntermediateDirectories: true
-    )
+    do {
+      try FileManager.default.createDirectory(
+        at: launchAgentsDir,
+        withIntermediateDirectories: true
+      )
+    } catch {
+      print("vmenu: failed to create LaunchAgents directory: \(error.localizedDescription)")
+      return false
+    }
 
     if FileManager.default.fileExists(atPath: plistURL.path) {
       if let existing = try? String(contentsOf: plistURL, encoding: .utf8),
        existing == plistContent {
-        return  // plist is already up to date
+        return true  // plist is already up to date
       }
       // Must bootout before overwriting, otherwise bootstrap will fail
       bootoutService()
     }
 
-    try? plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+    do {
+      try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+    } catch {
+      print("vmenu: failed to write plist \(plistURL.path): \(error.localizedDescription)")
+      return false
+    }
+
+    // Restrict plist permissions to owner-only (0600) since the file
+    // contains the Vault root token, binary path, and log file paths.
+    do {
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: plistURL.path
+      )
+    } catch {
+      print("vmenu: failed to set plist permissions: \(error.localizedDescription)")
+      // The plist was written but may be world-readable — remove it
+      // rather than leaving sensitive data with loose permissions.
+      try? FileManager.default.removeItem(atPath: plistURL.path)
+      return false
+    }
+
+    return true
   }
 
   /// Locate the `vault` binary by searching well-known directories first,
@@ -592,14 +819,43 @@ class VaultManager: ObservableObject {
     return nil
   }
 
-  /// Run `which <binary>` inside the user's login shell so we get the
-  /// full interactive/login PATH, not the minimal GUI-app PATH.
+  /// Search for `binary` on a broad PATH using `/usr/bin/which` directly.
+  ///
+  /// This avoids shell evaluation entirely — no `sh -c` interpolation and
+  /// no reliance on the `$SHELL` environment variable — eliminating any
+  /// risk of command injection or execution of a malicious shell binary.
   nonisolated private func loginShellWhich(_ binary: String) -> String? {
-    let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+    // Reject binaries that contain path separators or shell metacharacters.
+    // The function is only expected to resolve simple command names (e.g. "vault").
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+    guard !binary.isEmpty,
+          binary.unicodeScalars.allSatisfy({ allowed.contains($0) })
+    else {
+      return nil
+    }
+
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+    // Construct an explicit, broad PATH that covers common install locations.
+    // This replaces sourcing the login shell profile to discover the PATH.
+    let searchPATH = [
+      "\(home)/bin",
+      "\(home)/.local/bin",
+      "/opt/homebrew/bin",
+      "/opt/homebrew/sbin",
+      "/usr/local/bin",
+      "/usr/local/sbin",
+      "/opt/local/bin",
+      "/usr/bin",
+      "/usr/sbin",
+      "/bin",
+      "/sbin"
+    ].joined(separator: ":")
+
     let task = Process()
-    task.executableURL = URL(fileURLWithPath: shell)
-    // `-l` = login shell (sources profile), `-c` = run command.
-    task.arguments = ["-l", "-c", "which \(binary)"]
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+    task.arguments = [binary]
+    task.environment = ["PATH": searchPATH]
 
     let pipe = Pipe()
     task.standardOutput = pipe
@@ -612,7 +868,9 @@ class VaultManager: ObservableObject {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let path = String(data: data, encoding: .utf8)?
           .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let path, !path.isEmpty {
+        // Only accept absolute paths that point to an executable file.
+        if let path, !path.isEmpty, path.hasPrefix("/"),
+           FileManager.default.isExecutableFile(atPath: path) {
           return path
         }
       }
@@ -622,17 +880,30 @@ class VaultManager: ObservableObject {
     return nil
   }
 
+}
+
+// MARK: - VaultManager Lifecycle & Status
+
+extension VaultManager {
   func startVault() {
     guard isVaultAvailable else { return }
 
-    DispatchQueue.global(qos: .userInitiated).async {
-      self.createOrUpdatePlist()
+    Task.detached(priority: .userInitiated) {
+      guard self.createOrUpdatePlist() else {
+        print("vmenu: aborting start — plist creation failed")
+        return
+      }
 
       // Bootout any stale registration so we can cleanly bootstrap
       self.bootoutService()
 
-      // Truncate startup log to avoid stale values from previous runs
-      try? "".write(toFile: "/tmp/vault.startup.log", atomically: true, encoding: .utf8)
+      // Atomically recreate the startup log to avoid stale values and
+      // close the TOCTOU race window between truncation and Vault
+      // writing.  Uses O_CREAT|O_EXCL to prevent symlink injection.
+      guard self.safeRecreateLogFile(at: self.startupLogURL) else {
+        print("vmenu: aborting start — could not recreate startup log")
+        return
+      }
 
       // Bootstrap loads the plist into launchd
       if !self.bootstrapService() {
@@ -643,39 +914,33 @@ class VaultManager: ObservableObject {
       // Kick-start ensures the job actually runs (RunAtLoad is false)
       self.kickstartService()
 
-      DispatchQueue.main.async {
+      await MainActor.run {
         self.isRunning = true
       }
 
       // Wait for Vault to finish writing its startup log.
-      // If the log is still empty after the initial delay,
-      // retry a few times before giving up.
-      DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
-        var attempts = 0
-        let maxAttempts = 5
-        while attempts < maxAttempts {
-          let logContent = (try? String(
-            contentsOfFile: "/tmp/vault.startup.log",
-            encoding: .utf8
-          )) ?? ""
-          if logContent.contains("VAULT_ADDR") {
-            break
-          }
-          attempts += 1
-          Thread.sleep(forTimeInterval: 1)
+      // Uses Task.sleep instead of Thread.sleep to avoid blocking a
+      // GCD thread pool thread.
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      let maxAttempts = 5
+      for _ in 0..<maxAttempts {
+        let logContent = self.safeReadLogFile(at: self.startupLogURL) ?? ""
+        if logContent.contains("VAULT_ADDR") {
+          break
         }
-        DispatchQueue.main.async {
-          self.parseEnvironmentVariables()
-          self.refreshStatus()
-        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+      }
+      await MainActor.run {
+        self.parseEnvironmentVariables()
+        self.refreshStatus()
       }
     }
   }
 
   func stopVault() {
-    DispatchQueue.global(qos: .userInitiated).async {
+    Task.detached(priority: .userInitiated) {
       self.bootoutService()
-      DispatchQueue.main.async {
+      await MainActor.run {
         self.removeCACertFile()
         self.isRunning = false
         self.vaultAddr = ""
@@ -688,9 +953,9 @@ class VaultManager: ObservableObject {
   }
 
   func restartVault() {
-    DispatchQueue.global(qos: .userInitiated).async {
+    Task.detached(priority: .userInitiated) {
       self.bootoutService()
-      DispatchQueue.main.async {
+      await MainActor.run {
         self.removeCACertFile()
         self.isRunning = false
         self.vaultAddr = ""
@@ -700,65 +965,71 @@ class VaultManager: ObservableObject {
         self.parsedStatus = nil
       }
 
-      Thread.sleep(forTimeInterval: 1.0)
-      DispatchQueue.main.async {
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+      await MainActor.run {
         self.startVault()
       }
     }
   }
 
-  private func parseEnvironmentVariables() {
-    let startupLogURL = URL(fileURLWithPath: "/tmp/vault.startup.log")
+  internal func parseEnvironmentVariables() {
+    guard let content = safeReadLogFile(at: startupLogURL) else { return }
 
-    guard let content = try? String(contentsOf: startupLogURL, encoding: .utf8) else { return }
+    // Delegate to the shared, testable parser in VmenuCore.
+    let env = VmenuCore.parseEnvironmentVariables(from: content)
 
-    // Iterate in reverse so we always pick up the values from the most
-    // recent Vault launch (operational log is appended to across restarts).
-    let lines = content.components(separatedBy: .newlines)
-    var foundAddr = false
-    var foundCACert = false
-    var foundToken = false
-    var foundUnsealKey = false
-    for line in lines.reversed() {
-      if !foundAddr, line.contains("export VAULT_ADDR=") {
-        if let range = line.range(of: "export VAULT_ADDR=") {
-          let addr = String(line[range.upperBound...])
-          vaultAddr = addr.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\n"))
-          foundAddr = true
-        }
+    // Validate VAULT_ADDR points to a loopback address.  In dev mode
+    // Vault always listens on localhost; a non-loopback address indicates
+    // injected or tampered log content.
+    if !env.vaultAddr.isEmpty {
+      if isLoopbackVaultAddr(env.vaultAddr) {
+        vaultAddr = env.vaultAddr
+      } else {
+        print("vmenu: ignoring non-loopback VAULT_ADDR: \(env.vaultAddr)")
+        vaultAddr = ""
       }
-      if !foundCACert, line.contains("export VAULT_CACERT=") {
-        if let range = line.range(of: "export VAULT_CACERT=") {
-          let cert = String(line[range.upperBound...])
-          vaultCACert = cert.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\n"))
-          httpClient.caCertPath = vaultCACert
-          foundCACert = true
-        }
+    }
+
+    // Validate the CA cert path before accepting it.  This rejects
+    // symlinks, paths in world-writable directories, and files with
+    // unsafe ownership/permissions to prevent MITM via cert substitution.
+    if !env.vaultCACert.isEmpty {
+      if httpClient.validateCACertPath(env.vaultCACert) {
+        vaultCACert = env.vaultCACert
+        httpClient.caCertPath = env.vaultCACert
+      } else {
+        print("vmenu: ignoring unsafe VAULT_CACERT path: \(env.vaultCACert)")
+        vaultCACert = ""
+        httpClient.caCertPath = ""
       }
-      if !foundToken, line.contains("Root Token:") {
-        if let range = line.range(of: "Root Token:") {
-          let token = String(line[range.upperBound...])
-            .trimmingCharacters(in: .whitespaces)
-          if !token.isEmpty {
-            vaultToken = token
-            foundToken = true
-          }
-        }
+    }
+
+    // Validate the token contains only safe printable ASCII characters
+    // and is within a reasonable length.  Vault tokens are displayed in
+    // the UI and copied to the clipboard; rejecting unexpected characters
+    // prevents injected content from reaching the pasteboard or confusing
+    // the UI.
+    if !env.vaultToken.isEmpty {
+      if isValidVaultToken(env.vaultToken) {
+        vaultToken = env.vaultToken
+      } else {
+        print("vmenu: ignoring invalid VAULT_TOKEN (unexpected characters or length)")
+        vaultToken = ""
       }
-      if !foundUnsealKey, line.contains("Unseal Key:") {
-        if let range = line.range(of: "Unseal Key:") {
-          let key = String(line[range.upperBound...])
-            .trimmingCharacters(in: .whitespaces)
-          if !key.isEmpty {
-            unsealKey = key
-            foundUnsealKey = true
-          }
-        }
+    }
+
+    // Validate the unseal key contains only base64 characters and is
+    // within a reasonable length.  Like the token, this value is displayed
+    // and copied to clipboard.
+    if !env.unsealKey.isEmpty {
+      if isValidVaultUnsealKey(env.unsealKey) {
+        unsealKey = env.unsealKey
+      } else {
+        print("vmenu: ignoring invalid Unseal Key (unexpected characters or length)")
+        unsealKey = ""
       }
-      if foundAddr && foundCACert && foundToken && foundUnsealKey { break }
     }
   }
-
   /// Silently refresh parsed status without opening the status window.
   ///
   /// Uses the Vault HTTP API directly (`/v1/sys/seal-status` and
@@ -793,9 +1064,6 @@ class VaultManager: ObservableObject {
       }
     }
   }
-
-  private var statusWindow: NSWindow?
-  private var aboutWindow: NSWindow?
 
   /// Dismiss the MenuBarExtra popover so the status-bar icon remains
   /// clickable afterwards.
@@ -941,49 +1209,75 @@ struct MenuRowButton: View {
 struct EnvCopyRowButton: View {
   let label: String
   let value: String
+  /// When `true` the value is masked by default with a show/hide toggle.
+  var isSensitive: Bool = false
   @Binding var copyFeedback: String?
   let action: () -> Void
 
   @State private var isHovered = false
+  @State private var isRevealed = false
+
+  /// The text shown in the value line — masked or plain.
+  private var displayValue: String {
+    if isSensitive && !isRevealed {
+      return String(repeating: "•", count: min(value.count, 32))
+    }
+    return value
+  }
 
   var body: some View {
-    Button(action: action) {
-      HStack(spacing: 8) {
-        Image(systemName: "doc.on.clipboard")
-          .font(.system(size: 12))
-          .foregroundColor(isHovered ? .white : .accentColor)
-          .frame(width: 20)
-        VStack(alignment: .leading, spacing: 1) {
-          Text(label)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundColor(isHovered ? .white : .primary)
-          Text(value)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
+    HStack(spacing: 8) {
+      Button(action: action) {
+        HStack(spacing: 8) {
+          Image(systemName: "doc.on.clipboard")
+            .font(.system(size: 12))
+            .foregroundColor(isHovered ? .white : .accentColor)
+            .frame(width: 20)
+          VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+              .font(.system(size: 12, weight: .medium))
+              .foregroundColor(isHovered ? .white : .primary)
+            Text(displayValue)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          Spacer()
+          if copyFeedback == label {
+            Image(systemName: "checkmark")
+              .font(.system(size: 10, weight: .bold))
+              .foregroundColor(isHovered ? .white : .green)
+          } else {
+            Text("Copy")
+              .font(.system(size: 10))
+              .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
+          }
         }
-        Spacer()
-        if copyFeedback == label {
-          Image(systemName: "checkmark")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundColor(isHovered ? .white : .green)
-        } else {
-          Text("Copy")
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .focusable(false)
+
+      if isSensitive {
+        Button {
+          isRevealed.toggle()
+        } label: {
+          Image(systemName: isRevealed ? "eye.slash" : "eye")
             .font(.system(size: 10))
             .foregroundColor(isHovered ? .white.opacity(0.7) : .secondary)
         }
+        .buttonStyle(.borderless)
+        .focusable(false)
+        .help(isRevealed ? "Hide \(label)" : "Reveal \(label)")
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(
-        RoundedRectangle(cornerRadius: 6)
-          .fill(isHovered ? Color.accentColor : Color.clear)
-      )
-      .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .focusable(false)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(
+      RoundedRectangle(cornerRadius: 6)
+        .fill(isHovered ? Color.accentColor : Color.clear)
+    )
     .onHover { hovering in
       isHovered = hovering
     }
@@ -1283,16 +1577,17 @@ struct VaultMenuView: View {
         envCopyRow(label: "VAULT_CACERT", value: vaultManager.vaultCACert)
       }
       if !vaultManager.vaultToken.isEmpty {
-        envCopyRow(label: "VAULT_TOKEN", value: vaultManager.vaultToken)
+        envCopyRow(label: "VAULT_TOKEN", value: vaultManager.vaultToken, isSensitive: true)
       }
     }
     .padding(.vertical, 4)
     .padding(.horizontal, 4)
   }
 
-  private func envCopyRow(label: String, value: String) -> some View {
-    EnvCopyRowButton(label: label, value: value, copyFeedback: $copyFeedback) {
-      copyToClipboard("export \(label)=\(value)")
+  private func envCopyRow(label: String, value: String, isSensitive: Bool = false) -> some View {
+    EnvCopyRowButton(label: label, value: value, isSensitive: isSensitive, copyFeedback: $copyFeedback) {
+      let text = "export \(label)=\(value)"
+      copyToClipboard(text, autoExpire: isSensitive)
       copyFeedback = label
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
         if copyFeedback == label { copyFeedback = nil }
@@ -1322,327 +1617,26 @@ struct VaultMenuView: View {
     MenuRowButton(title: title, icon: icon, shortcut: shortcut, action: action)
   }
 
-  private func copyToClipboard(_ text: String) {
+  /// Copy text to the system clipboard.
+  ///
+  /// When `autoExpire` is `true` the clipboard is automatically cleared
+  /// after 30 seconds if it still contains the copied value.  This limits
+  /// the window during which other applications can snoop the secret via
+  /// `NSPasteboard`.
+  private func copyToClipboard(_ text: String, autoExpire: Bool = false) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-  }
-}
 
-struct StatusPopoverView: View {
-  let status: VaultStatus
-  let rawOutput: String
-  let unsealKey: String
-
-  @State private var showRawOutput = false
-  @State private var showUnsealKey = false
-  @State private var unsealKeyCopied = false
-
-  var body: some View {
-    VStack(spacing: 0) {
-      headerView
-      Divider()
-      ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          statusSection
-          clusterSection
-          if !unsealKey.isEmpty {
-            unsealKeySection
-          }
-          rawOutputSection
-        }
-        .padding(20)
-      }
-    }
-    .frame(width: 500, height: 520)
-    .background(Color(nsColor: .windowBackgroundColor))
-  }
-
-  private var headerView: some View {
-    HStack {
-      Image(systemName: "server.rack")
-        .font(.title3)
-        .foregroundColor(.accentColor)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Vault server status")
-          .font(.headline)
-        Text("Dev mode server")
-          .font(.caption)
-          .foregroundColor(.secondary)
-      }
-
-      Spacer()
-
-      sealStatusBadge
-    }
-    .padding(12)
-    .background(Color(nsColor: .controlBackgroundColor))
-  }
-
-  private var sealStatusBadge: some View {
-    let isSealed = status.sealed != "false"
-    let badgeColor: Color = isSealed ? .orange : .green
-
-    return HStack(spacing: 4) {
-      Circle()
-        .fill(badgeColor)
-        .frame(width: 8, height: 8)
-      Text(isSealed ? "Sealed" : "Unsealed")
-        .font(.caption)
-        .fontWeight(.medium)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 5)
-    .background(
-      Capsule()
-        .fill(badgeColor.opacity(0.15))
-    )
-  }
-
-  private var statusSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Server Information")
-        .font(.subheadline)
-        .fontWeight(.semibold)
-        .foregroundColor(.secondary)
-
-      LazyVGrid(columns: [
-        GridItem(.flexible()),
-        GridItem(.flexible())
-      ], spacing: 12) {
-        StatusItemView(label: "Version", value: status.version, icon: "info.circle")
-        StatusItemView(
-          label: "Storage",
-          value: status.storageType.capitalized,
-          icon: "internaldrive"
-        )
-        StatusItemView(
-          label: "Seal Type",
-          value: status.sealType.capitalized,
-          icon: "lock.shield"
-        )
-        StatusItemView(
-          label: "HA Enabled",
-          value: status.haEnabled.capitalized,
-          icon: "heart.fill"
-        )
-      }
-
-      HStack(spacing: 16) {
-        StatusItemView(
-          label: "Initialized",
-          value: status.initialized.capitalized,
-          icon: "checkmark.circle"
-        )
-        StatusItemView(label: "Key Shares", value: status.totalShares, icon: "number")
-        StatusItemView(
-          label: "Key Threshold",
-          value: status.threshold,
-          icon: "slider.horizontal.3"
-        )
-      }
-    }
-  }
-
-  private var clusterSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Cluster Details")
-        .font(.subheadline)
-        .fontWeight(.semibold)
-        .foregroundColor(.secondary)
-
-      VStack(spacing: 8) {
-        if status.clusterName != "-" {
-          StatusRowView(label: "Cluster Name", value: status.clusterName)
-        }
-        if status.clusterId != "-" {
-          StatusRowView(label: "Cluster ID", value: status.clusterId)
+    if autoExpire {
+      let changeCount = NSPasteboard.general.changeCount
+      DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+        // Only clear if the pasteboard hasn't been written to since our
+        // copy — avoids wiping unrelated content the user copied later.
+        if NSPasteboard.general.changeCount == changeCount {
+          NSPasteboard.general.clearContents()
         }
       }
-      .padding(12)
-      .background(
-        RoundedRectangle(cornerRadius: 8)
-          .fill(Color(nsColor: .controlBackgroundColor))
-      )
     }
-  }
-
-  private var unsealKeySection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Unseal Key")
-        .font(.subheadline)
-        .fontWeight(.semibold)
-        .foregroundColor(.secondary)
-
-      VStack(spacing: 8) {
-        HStack(spacing: 8) {
-          Image(systemName: "key.fill")
-            .font(.caption)
-            .foregroundColor(.accentColor)
-            .frame(width: 16)
-
-          if showUnsealKey {
-            Text(unsealKey)
-              .font(.system(.caption, design: .monospaced))
-              .lineLimit(1)
-              .truncationMode(.middle)
-          } else {
-            Text(String(repeating: "•", count: 32))
-              .font(.system(.caption, design: .monospaced))
-              .foregroundColor(.secondary)
-          }
-
-          Spacer()
-
-          Button {
-            showUnsealKey.toggle()
-          } label: {
-            Image(systemName: showUnsealKey ? "eye.slash" : "eye")
-              .font(.caption)
-          }
-          .buttonStyle(.borderless)
-          .help(showUnsealKey ? "Hide unseal key" : "Reveal unseal key")
-
-          Button {
-            copyToClipboard(unsealKey)
-            unsealKeyCopied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-              unsealKeyCopied = false
-            }
-          } label: {
-            Label(
-              unsealKeyCopied ? "Copied" : "Copy",
-              systemImage: unsealKeyCopied ? "checkmark" : "doc.on.clipboard"
-            )
-            .font(.caption)
-          }
-          .buttonStyle(.borderless)
-        }
-      }
-      .padding(12)
-      .background(
-        RoundedRectangle(cornerRadius: 8)
-          .fill(Color(nsColor: .controlBackgroundColor))
-      )
-    }
-  }
-
-  private var rawOutputSection: some View {
-    DisclosureGroup(isExpanded: $showRawOutput) {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Spacer()
-
-          Button {
-            copyToClipboard(rawOutput)
-          } label: {
-            Label("Copy", systemImage: "doc.on.clipboard")
-              .font(.caption)
-          }
-          .buttonStyle(.borderless)
-        }
-
-        Text(rawOutput)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundColor(.secondary)
-          .fixedSize(horizontal: true, vertical: false)
-          .padding(12)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .background(
-            RoundedRectangle(cornerRadius: 8)
-              .fill(Color(nsColor: .textBackgroundColor))
-          )
-      }
-    } label: {
-      Text("Raw Output")
-        .font(.subheadline)
-        .fontWeight(.semibold)
-        .foregroundColor(.secondary)
-    }
-  }
-
-  private func copyToClipboard(_ text: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-  }
-}
-
-struct StatusItemView: View {
-  let label: String
-  let value: String
-  let icon: String
-
-  var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: icon)
-        .font(.caption)
-        .foregroundColor(.accentColor)
-        .frame(width: 16)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(label)
-          .font(.caption2)
-          .foregroundColor(.secondary)
-          .fixedSize(horizontal: true, vertical: false)
-        Text(value)
-          .font(.subheadline)
-          .fontWeight(.medium)
-          .fixedSize(horizontal: true, vertical: false)
-      }
-
-      Spacer()
-    }
-    .padding(10)
-    .background(
-      RoundedRectangle(cornerRadius: 8)
-        .fill(Color(nsColor: .controlBackgroundColor))
-    )
-  }
-}
-
-struct StatusRowView: View {
-  let label: String
-  let value: String
-
-  var body: some View {
-    HStack {
-      Text(label)
-        .font(.caption)
-        .foregroundColor(.secondary)
-        .fixedSize(horizontal: true, vertical: false)
-      Spacer()
-      Text(value)
-        .font(.system(.caption, design: .monospaced))
-        .fixedSize(horizontal: true, vertical: false)
-    }
-  }
-}
-
-struct StatusErrorView: View {
-  let errorMessage: String
-
-  var body: some View {
-    VStack(spacing: 16) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 40))
-        .foregroundColor(.orange)
-
-      Text("Failed to Get Status")
-        .font(.headline)
-
-      Text(errorMessage)
-        .font(.caption)
-        .foregroundColor(.secondary)
-        .multilineTextAlignment(.center)
-        .padding(.horizontal)
-
-      Button("Dismiss") {
-        NSApp.keyWindow?.close()
-      }
-      .keyboardShortcut(.return, modifiers: [])
-    }
-    .padding(30)
-    .frame(width: 300)
   }
 }
 

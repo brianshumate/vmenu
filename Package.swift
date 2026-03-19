@@ -14,7 +14,7 @@ let package = Package(
     ),
     .executableTarget(
       name: "vmenu",
-      dependencies: [],
+      dependencies: ["VmenuCore"],
       path: ".",
       exclude: [
         "LICENSE",
@@ -29,7 +29,7 @@ let package = Package(
         "build-app.sh",
         "vmenu.app"
       ],
-      sources: ["vmenu.swift"]
+      sources: ["vmenu.swift", "StatusViews.swift"]
     ),
     .testTarget(
       name: "VmenuCoreTests",

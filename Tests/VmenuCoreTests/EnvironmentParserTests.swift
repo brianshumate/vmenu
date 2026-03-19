@@ -261,4 +261,189 @@ final class EnvironmentParserTests: XCTestCase {
     let rhs = VaultEnvironment(unsealKey: "key2")
     XCTAssertNotEqual(lhs, rhs)
   }
+
+  // MARK: - isLoopbackVaultAddr tests
+
+  func testLoopback127001() {
+    XCTAssertTrue(isLoopbackVaultAddr("https://127.0.0.1:8200"))
+  }
+
+  func testLoopbackLocalhost() {
+    XCTAssertTrue(isLoopbackVaultAddr("https://localhost:8200"))
+  }
+
+  func testLoopbackIPv6() {
+    XCTAssertTrue(isLoopbackVaultAddr("https://[::1]:8200"))
+  }
+
+  func testLoopbackHTTP() {
+    XCTAssertTrue(isLoopbackVaultAddr("http://127.0.0.1:8200"))
+  }
+
+  func testLoopbackLocalhostNoPort() {
+    XCTAssertTrue(isLoopbackVaultAddr("https://localhost"))
+  }
+
+  func testNonLoopbackRemoteHost() {
+    XCTAssertFalse(isLoopbackVaultAddr("https://evil.example.com:8200"))
+  }
+
+  func testNonLoopbackPrivateIP() {
+    XCTAssertFalse(isLoopbackVaultAddr("https://10.0.1.50:8200"))
+  }
+
+  func testNonLoopbackPublicIP() {
+    XCTAssertFalse(isLoopbackVaultAddr("https://203.0.113.1:8200"))
+  }
+
+  func testNonLoopbackEmptyString() {
+    XCTAssertFalse(isLoopbackVaultAddr(""))
+  }
+
+  func testNonLoopbackGarbageString() {
+    XCTAssertFalse(isLoopbackVaultAddr("not-a-url"))
+  }
+
+  func testNonLoopbackFTPScheme() {
+    XCTAssertFalse(isLoopbackVaultAddr("ftp://127.0.0.1:8200"))
+  }
+
+  func testNonLoopbackNoScheme() {
+    XCTAssertFalse(isLoopbackVaultAddr("127.0.0.1:8200"))
+  }
+
+  func testLoopbackLocalhostUppercase() {
+    XCTAssertTrue(isLoopbackVaultAddr("HTTPS://LOCALHOST:8200"))
+  }
+
+  func testNonLoopback192168() {
+    XCTAssertFalse(isLoopbackVaultAddr("https://192.168.1.1:8200"))
+  }
+
+  // MARK: - isValidVaultToken tests
+
+  func testValidTokenDevRoot() {
+    XCTAssertTrue(isValidVaultToken("root"))
+  }
+
+  func testValidTokenLegacyFormat() {
+    XCTAssertTrue(isValidVaultToken("s.abcdef123456"))
+  }
+
+  func testValidTokenModernFormat() {
+    XCTAssertTrue(isValidVaultToken("hvs.CAESIJmAshSNMsfGUxPeH5PBc"))
+  }
+
+  func testValidTokenBatchFormat() {
+    XCTAssertTrue(isValidVaultToken("hvb.AAAAAQKnM2E4YjFjYy0zOGZl"))
+  }
+
+  func testValidTokenWithHyphens() {
+    XCTAssertTrue(isValidVaultToken("s.some-long-token-value"))
+  }
+
+  func testInvalidTokenEmpty() {
+    XCTAssertFalse(isValidVaultToken(""))
+  }
+
+  func testInvalidTokenWithControlChars() {
+    XCTAssertFalse(isValidVaultToken("root\u{00}injected"))
+  }
+
+  func testInvalidTokenWithNewline() {
+    XCTAssertFalse(isValidVaultToken("root\ninjected"))
+  }
+
+  func testInvalidTokenWithTab() {
+    XCTAssertFalse(isValidVaultToken("root\tinjected"))
+  }
+
+  func testInvalidTokenWithSpace() {
+    XCTAssertFalse(isValidVaultToken("root injected"))
+  }
+
+  func testInvalidTokenWithNonASCII() {
+    XCTAssertFalse(isValidVaultToken("root\u{FF}injected"))
+  }
+
+  func testInvalidTokenTooLong() {
+    let longToken = String(repeating: "a", count: 513)
+    XCTAssertFalse(isValidVaultToken(longToken))
+  }
+
+  func testValidTokenAtMaxLength() {
+    let maxToken = String(repeating: "a", count: 512)
+    XCTAssertTrue(isValidVaultToken(maxToken))
+  }
+
+  func testTokenWithShellMetacharsAccepted() {
+    // Shell metacharacters are printable ASCII. Since tokens are only
+    // displayed in SwiftUI Text views and copied to NSPasteboard (never
+    // passed to a shell), they don't pose a risk and are accepted.
+    XCTAssertTrue(isValidVaultToken("root$(whoami)"))
+  }
+
+  // MARK: - isValidVaultUnsealKey tests
+
+  func testValidUnsealKeyBase64() {
+    XCTAssertTrue(isValidVaultUnsealKey("GDz8cL2gACZJAByboalN3e0BFpqAmwNCJ3Tve5Evac0="))
+  }
+
+  func testValidUnsealKeyBase64WithPlus() {
+    XCTAssertTrue(isValidVaultUnsealKey("abc+def/ghi="))
+  }
+
+  func testValidUnsealKeyAlphanumericOnly() {
+    XCTAssertTrue(isValidVaultUnsealKey("abc123def456"))
+  }
+
+  func testInvalidUnsealKeyEmpty() {
+    XCTAssertFalse(isValidVaultUnsealKey(""))
+  }
+
+  func testInvalidUnsealKeyWithControlChars() {
+    XCTAssertFalse(isValidVaultUnsealKey("abc\u{00}def"))
+  }
+
+  func testInvalidUnsealKeyWithNewline() {
+    XCTAssertFalse(isValidVaultUnsealKey("abc\ndef"))
+  }
+
+  func testInvalidUnsealKeyWithSpace() {
+    XCTAssertFalse(isValidVaultUnsealKey("abc def"))
+  }
+
+  func testInvalidUnsealKeyWithDot() {
+    // Base64 does not include dots
+    XCTAssertFalse(isValidVaultUnsealKey("abc.def"))
+  }
+
+  func testInvalidUnsealKeyWithShellMetachars() {
+    XCTAssertFalse(isValidVaultUnsealKey("abc$(whoami)"))
+  }
+
+  func testInvalidUnsealKeyTooLong() {
+    let longKey = String(repeating: "A", count: 513)
+    XCTAssertFalse(isValidVaultUnsealKey(longKey))
+  }
+
+  func testValidUnsealKeyAtMaxLength() {
+    let maxKey = String(repeating: "A", count: 512)
+    XCTAssertTrue(isValidVaultUnsealKey(maxKey))
+  }
+
+  func testInvalidUnsealKeyWithNonASCII() {
+    XCTAssertFalse(isValidVaultUnsealKey("abc\u{FF}def"))
+  }
+
+  func testTokenWithBacktickAccepted() {
+    // Backticks are printable ASCII. Tokens are never evaluated by a
+    // shell, so this is safe and accepted.
+    XCTAssertTrue(isValidVaultToken("`whoami`"))
+  }
+
+  func testInvalidUnsealKeyWithHyphen() {
+    // Hyphens are not in the base64 alphabet
+    XCTAssertFalse(isValidVaultUnsealKey("abc-def"))
+  }
 }
