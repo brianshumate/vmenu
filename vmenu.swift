@@ -768,6 +768,22 @@ extension VaultManager {
     }
 }
 
+// MARK: - Symbol Effect Helpers
+
+/// Applies `.contentTransition(.symbolEffect(.replace))` on macOS 14+ and
+/// falls back to a plain view on macOS 13.  Keeps call sites clean while
+/// respecting the macOS 13 deployment target.
+extension View {
+    @ViewBuilder
+    func symbolReplaceTransition() -> some View {
+        if #available(macOS 14.0, *) {
+            self.contentTransition(.symbolEffect(.replace))
+        } else {
+            self
+        }
+    }
+}
+
 struct MenuRowButton: View {
     let title: String
     let icon: String
@@ -783,8 +799,8 @@ struct MenuRowButton: View {
             HStack(spacing: 8) {
                 Image(systemName: icon)
                     .font(.caption)
-                    .fontWeight(.medium)
                     .frame(width: iconWidth)
+                    .accessibilityHidden(true)
                 Text(title)
                     .font(.body)
                 Spacer()
@@ -848,6 +864,7 @@ struct EnvCopyRowButton: View {
                                 : AnyShapeStyle(Color.accentColor)
                         )
                         .frame(width: iconWidth)
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(label)
                             .font(.caption)
@@ -869,13 +886,14 @@ struct EnvCopyRowButton: View {
                     }
                     Spacer()
                     if copyFeedback == label {
-                        Image(systemName: "checkmark")
+                        Image(systemName: "checkmark.circle.fill")
                             .font(.caption2)
                             .fontWeight(.bold)
                             .foregroundStyle(
                                 isHovered
                                     ? AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
                                     : AnyShapeStyle(Color("CopyConfirmation")))
+                            .accessibilityHidden(true)
                     } else {
                         Text("Copy")
                             .font(.caption2)
@@ -895,13 +913,14 @@ struct EnvCopyRowButton: View {
                 Button {
                     isRevealed.toggle()
                 } label: {
-                    Image(systemName: isRevealed ? "eye.slash" : "eye")
+                    Image(systemName: isRevealed ? "eye.slash.fill" : "eye.fill")
                         .font(.caption2)
                         .foregroundStyle(
                             isHovered
                                 ? AnyShapeStyle(
                                     Color(nsColor: .selectedMenuItemTextColor).opacity(0.7))
                                 : AnyShapeStyle(.secondary))
+                        .symbolReplaceTransition()
                 }
                 .buttonStyle(.borderless)
                 .focusable(false)
@@ -922,10 +941,15 @@ struct EnvCopyRowButton: View {
 }
 
 /// Loading indicator.
+///
+/// Respects the Reduce Motion accessibility setting: when enabled, all dots
+/// are shown at a uniform static opacity instead of animating.
 struct DottedLoadingIndicator: View {
     let dotCount: Int
     let dotSize: CGFloat
     let spacing: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(dotCount: Int = 5, dotSize: CGFloat = 4, spacing: CGFloat = 6) {
         self.dotCount = dotCount
@@ -934,19 +958,31 @@ struct DottedLoadingIndicator: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.18)) { timeline in
-            let tick = Int(timeline.date.timeIntervalSinceReferenceDate / 0.18)
-            let activeIndex = tick % dotCount
-
+        if reduceMotion {
+            // Static representation: all dots at uniform opacity.
             HStack(spacing: spacing) {
-                ForEach(0..<dotCount, id: \.self) { index in
+                ForEach(0..<dotCount, id: \.self) { _ in
                     Circle()
                         .fill(Color.secondary)
                         .frame(width: dotSize, height: dotSize)
-                        .opacity(dotOpacity(index: index, active: activeIndex))
+                        .opacity(0.6)
                 }
             }
-            .animation(.easeInOut(duration: 0.16), value: activeIndex)
+        } else {
+            TimelineView(.periodic(from: .now, by: 0.18)) { timeline in
+                let tick = Int(timeline.date.timeIntervalSinceReferenceDate / 0.18)
+                let activeIndex = tick % dotCount
+
+                HStack(spacing: spacing) {
+                    ForEach(0..<dotCount, id: \.self) { index in
+                        Circle()
+                            .fill(Color.secondary)
+                            .frame(width: dotSize, height: dotSize)
+                            .opacity(dotOpacity(index: index, active: activeIndex))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.16), value: activeIndex)
+            }
         }
     }
 
@@ -998,8 +1034,10 @@ struct VaultMenuView: View {
         VStack(spacing: 0) {
             VStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
+                    .symbolRenderingMode(.hierarchical)
                     .font(.largeTitle)
                     .foregroundStyle(Color(nsColor: .systemOrange))
+                    .accessibilityLabel("Warning")
 
                 Text("Vault Not Installed")
                     .font(.headline)
@@ -1053,9 +1091,11 @@ struct VaultMenuView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "lock.shield.fill")
+                    .symbolRenderingMode(.hierarchical)
                     .font(.title2)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Vault Dev Mode")
@@ -1162,6 +1202,7 @@ struct VaultMenuView: View {
                 Image(systemName: stateIcon)
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(stateColor)
+                    .accessibilityHidden(true)
             } else {
                 Circle()
                     .fill(stateColor)
@@ -1206,6 +1247,7 @@ struct VaultMenuView: View {
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
+                .accessibilityHidden(true)
             Text(label)
                 .font(.caption)
                 .fontWeight(.medium)
@@ -1223,6 +1265,7 @@ struct VaultMenuView: View {
         HStack(spacing: 3) {
             Image(systemName: icon)
                 .font(.caption2)
+                .accessibilityHidden(true)
             Text(label)
                 .font(.caption2)
                 .fontWeight(.medium)
@@ -1244,6 +1287,8 @@ struct VaultMenuView: View {
         HStack(spacing: 3) {
             Image(systemName: sealed ? "lock.fill" : "lock.open.fill")
                 .font(.caption2)
+                .symbolReplaceTransition()
+                .accessibilityHidden(true)
             Text(sealed ? "Sealed" : "Unsealed")
                 .font(.caption2)
                 .fontWeight(.medium)

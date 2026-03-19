@@ -52,9 +52,11 @@ struct StatusPopoverView: View {
           .fill(Color(nsColor: .separatorColor).opacity(0.12))
           .frame(width: heroIconCircleSize, height: heroIconCircleSize)
         Image(systemName: "server.rack")
+          .symbolRenderingMode(.hierarchical)
           .font(.title3)
           .fontWeight(.medium)
           .foregroundStyle(.secondary)
+          .accessibilityHidden(true)
       }
 
       VStack(alignment: .leading, spacing: 3) {
@@ -101,6 +103,8 @@ struct StatusPopoverView: View {
       Image(systemName: icon)
         .font(.caption2)
         .fontWeight(.semibold)
+        .symbolReplaceTransition()
+        .accessibilityHidden(true)
       Text(label)
         .font(.caption)
         .fontWeight(.semibold)
@@ -198,9 +202,10 @@ struct StatusPopoverView: View {
         }
         if status.clusterName == "-" && status.clusterId == "-" {
           HStack {
-            Image(systemName: "minus.circle")
+            Image(systemName: "info.circle")
               .font(.caption)
               .foregroundStyle(.tertiary)
+              .accessibilityHidden(true)
             Text("No cluster details available")
               .font(.caption)
               .foregroundStyle(.tertiary)
@@ -221,6 +226,7 @@ struct StatusPopoverView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
           .frame(width: 18)
+          .accessibilityHidden(true)
 
         Group {
           if showUnsealKey {
@@ -245,6 +251,7 @@ struct StatusPopoverView: View {
             Image(systemName: showUnsealKey ? "eye.slash.fill" : "eye.fill")
               .font(.caption)
               .foregroundStyle(.secondary)
+              .symbolReplaceTransition()
               .frame(width: eyeButtonSize, height: eyeButtonSize)
               .contentShape(Rectangle())
           }
@@ -260,8 +267,10 @@ struct StatusPopoverView: View {
             }
           } label: {
             HStack(spacing: 3) {
-              Image(systemName: unsealKeyCopied ? "checkmark" : "doc.on.clipboard")
+              Image(systemName: unsealKeyCopied ? "checkmark.circle.fill" : "doc.on.clipboard")
                 .font(.caption2)
+                .symbolReplaceTransition()
+                .accessibilityLabel(unsealKeyCopied ? "Copied" : "Copy to clipboard")
               Text(unsealKeyCopied ? "Copied" : "Copy")
                 .font(.caption2)
                 .fontWeight(.medium)
@@ -318,6 +327,7 @@ struct StatusPopoverView: View {
             HStack(spacing: 3) {
               Image(systemName: "doc.on.clipboard")
                 .font(.caption2)
+                .accessibilityHidden(true)
               Text("Copy")
                 .font(.caption2)
                 .fontWeight(.medium)
@@ -404,6 +414,7 @@ private struct CardView<Content: View>: View {
   @ViewBuilder let content: () -> Content
 
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorSchemeContrast) private var colorSchemeContrast
   @Environment(\.colorScheme) private var colorScheme
 
@@ -457,7 +468,7 @@ private struct CardView<Content: View>: View {
     Group {
       if isCollapsible, let binding = isExpanded {
         Button {
-          withAnimation(.easeInOut(duration: 0.2)) {
+          withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
             binding.wrappedValue.toggle()
           }
         } label: {
@@ -476,6 +487,7 @@ private struct CardView<Content: View>: View {
         .font(.caption)
         .fontWeight(.semibold)
         .foregroundStyle(.secondary)
+        .accessibilityHidden(true)
       Text(title)
         .font(.caption)
         .fontWeight(.semibold)
@@ -487,6 +499,8 @@ private struct CardView<Content: View>: View {
           .fontWeight(.bold)
           .foregroundStyle(.tertiary)
           .rotationEffect(.degrees(expanded ? 90 : 0))
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: expanded)
+          .accessibilityHidden(true)
       }
     }
   }
@@ -521,9 +535,11 @@ private struct MetricTile: View {
             : AnyShapeStyle(.ultraThinMaterial))
           .frame(width: iconBoxSize, height: iconBoxSize)
         Image(systemName: icon)
+          .symbolRenderingMode(.hierarchical)
           .font(.caption)
           .fontWeight(.medium)
           .foregroundStyle(.secondary)
+          .accessibilityHidden(true)
       }
 
       VStack(alignment: .leading, spacing: 1) {
@@ -580,6 +596,7 @@ private struct ClusterDetailRow: View {
           .fontWeight(.medium)
           .foregroundStyle(.tertiary)
           .frame(width: 16)
+          .accessibilityHidden(true)
         Text(label)
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -640,6 +657,7 @@ struct StatusItemView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .frame(width: 16)
+        .accessibilityHidden(true)
 
       VStack(alignment: .leading, spacing: 2) {
         Text(label)
@@ -680,8 +698,10 @@ struct StatusErrorView: View {
           .fill(.ultraThinMaterial)
           .frame(width: iconCircleSize, height: iconCircleSize)
         Image(systemName: "exclamationmark.triangle.fill")
+          .symbolRenderingMode(.hierarchical)
           .font(.title)
           .foregroundStyle(Color(nsColor: .systemOrange))
+          .accessibilityLabel("Error")
       }
 
       VStack(spacing: 6) {
