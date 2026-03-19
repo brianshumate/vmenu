@@ -46,7 +46,7 @@
 
 ### Menu bar icon
 
-The menu bar icon reflects the current server state:
+The menu bar icon is a small inverted triangle with a colored dot in the center that reflects one of these possible Vault server states:
 
 | Icon color | State |
 |---|---|
