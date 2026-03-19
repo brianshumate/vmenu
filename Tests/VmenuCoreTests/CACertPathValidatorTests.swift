@@ -158,4 +158,109 @@ final class CACertPathValidatorTests: XCTestCase {
     let path = tempDir.appendingPathComponent("nonexistent.pem").path
     XCTAssertFalse(validateCACertPath(path))
   }
+
+  // MARK: - Tests: safeReadCACertData (TOCTOU-safe reader)
+
+  func testSafeReadValidFile() {
+    let content = "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n"
+    let url = tempDir.appendingPathComponent("ca.pem")
+    FileManager.default.createFile(atPath: url.path, contents: Data(content.utf8))
+    try? FileManager.default.setAttributes(
+      [.posixPermissions: 0o600], ofItemAtPath: url.path)
+
+    let data = safeReadCACertData(url.path)
+    XCTAssertNotNil(data)
+    XCTAssertEqual(String(data: data!, encoding: .utf8), content)
+  }
+
+  func testSafeReadReturnsCorrectContent() {
+    let content = "test-cert-data-12345"
+    let url = tempDir.appendingPathComponent("cert.pem")
+    FileManager.default.createFile(atPath: url.path, contents: Data(content.utf8))
+    try? FileManager.default.setAttributes(
+      [.posixPermissions: 0o600], ofItemAtPath: url.path)
+
+    let data = safeReadCACertData(url.path)
+    XCTAssertNotNil(data)
+    XCTAssertEqual(data?.count, content.utf8.count)
+  }
+
+  func testSafeReadRejectsSymlink() {
+    let realPath = createFile(named: "real-ca.pem")
+    let linkPath = createSymlink(named: "link-ca.pem", target: realPath)
+    // O_NOFOLLOW should cause open() to fail on the symlink.
+    XCTAssertNil(safeReadCACertData(linkPath))
+  }
+
+  func testSafeReadRejectsRelativePath() {
+    XCTAssertNil(safeReadCACertData("relative/ca.pem"))
+  }
+
+  func testSafeReadRejectsEmptyPath() {
+    XCTAssertNil(safeReadCACertData(""))
+  }
+
+  func testSafeReadRejectsTmpPath() {
+    let tmpPath = "/tmp/vmenu-test-\(UUID().uuidString).pem"
+    FileManager.default.createFile(atPath: tmpPath, contents: Data("test".utf8))
+    defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+
+    XCTAssertNil(safeReadCACertData(tmpPath))
+  }
+
+  func testSafeReadRejectsGroupWritable() {
+    let path = createFile(named: "ca.pem", permissions: 0o620)
+    XCTAssertNil(safeReadCACertData(path))
+  }
+
+  func testSafeReadRejectsWorldWritable() {
+    let path = createFile(named: "ca.pem", permissions: 0o602)
+    XCTAssertNil(safeReadCACertData(path))
+  }
+
+  func testSafeReadRejectsNonexistentFile() {
+    let path = tempDir.appendingPathComponent("nonexistent.pem").path
+    XCTAssertNil(safeReadCACertData(path))
+  }
+
+  func testSafeReadRejectsDirectory() {
+    let dirPath = tempDir.appendingPathComponent("subdir").path
+    try? FileManager.default.createDirectory(
+      atPath: dirPath, withIntermediateDirectories: true)
+    XCTAssertNil(safeReadCACertData(dirPath))
+  }
+
+  func testSafeReadAcceptsReadOnlyFile() {
+    let content = "read-only-cert"
+    let url = tempDir.appendingPathComponent("ca.pem")
+    FileManager.default.createFile(atPath: url.path, contents: Data(content.utf8))
+    try? FileManager.default.setAttributes(
+      [.posixPermissions: 0o400], ofItemAtPath: url.path)
+
+    let data = safeReadCACertData(url.path)
+    XCTAssertNotNil(data)
+    XCTAssertEqual(String(data: data!, encoding: .utf8), content)
+  }
+
+  func testSafeReadAcceptsWorldReadableNotWritable() {
+    let content = "world-readable-cert"
+    let url = tempDir.appendingPathComponent("ca.pem")
+    FileManager.default.createFile(atPath: url.path, contents: Data(content.utf8))
+    try? FileManager.default.setAttributes(
+      [.posixPermissions: 0o644], ofItemAtPath: url.path)
+
+    let data = safeReadCACertData(url.path)
+    XCTAssertNotNil(data)
+    XCTAssertEqual(String(data: data!, encoding: .utf8), content)
+  }
+
+  func testSafeReadRejectsEmptyFile() {
+    let url = tempDir.appendingPathComponent("empty.pem")
+    FileManager.default.createFile(atPath: url.path, contents: Data())
+    try? FileManager.default.setAttributes(
+      [.posixPermissions: 0o600], ofItemAtPath: url.path)
+
+    // Empty files (0 bytes) are rejected — a valid cert is never empty.
+    XCTAssertNil(safeReadCACertData(url.path))
+  }
 }
