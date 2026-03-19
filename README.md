@@ -71,15 +71,21 @@ Grab the latest DMG or zip from [**Releases**](https://github.com/brianshumate/v
 
 ### Build from source
 
+Build both the main app and XPC helper
+
 ```shell
-# Run in debug mode (XPC helper requires the .app bundle — see below)
-swift run
-
-# Build both the main app and XPC helper
 swift build -c release
+```
 
-# Build and ad-hoc sign a full .app bundle (includes the XPC helper)
+Build and ad-hoc sign a full .app bundle (includes the XPC helper)
+
+```shell
 ./build-app.sh release
+```
+
+Copy app to `/Applications` folder.
+
+```shell
 cp -r vmenu.app /Applications/
 ```
 
@@ -117,12 +123,12 @@ vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main 
 
 ### Architecture
 
-The app uses a two-process architecture:
+The app uses a two-process architecture for separation of concerns and defense in depth.
 
 | Component | Bundle path | Sandbox | Role |
 |---|---|---|---|
-| **Main app** (`vmenu`) | `Contents/MacOS/vmenu` | Sandboxed | UI, Vault HTTP API polling, clipboard |
-| **XPC helper** (`com.brianshumate.vmenu.helper`) | `Contents/MacOS/com.brianshumate.vmenu.helper` | Unsandboxed | `launchctl`, plist/log file I/O, `vault` binary discovery |
+| **Main app** (vmenu) | Contents/MacOS/vmenu | Sandboxed | UI, Vault HTTP API polling, clipboard |
+| **XPC helper** (com.brianshumate.vmenu.helper) | Contents/MacOS/com.brianshumate.vmenu.helper | Unsandboxed | launchctl, plist/log file I/O, vault binary discovery |
 
 The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice) at launch. launchd starts the helper on demand when the main app connects to its Mach service over XPC. The helper manages the Vault dev server through a LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` subcommands.
 
@@ -132,7 +138,7 @@ The main app communicates with the Vault server directly over HTTPS for status p
 
 ### XPC protocol
 
-All operations that the App Sandbox forbids are exposed through the `VmenuHelperProtocol` XPC interface:
+All operations that the App Sandbox forbids are exposed through the `VmenuHelperProtocol` XPC interface.
 
 | Method | Operation |
 |---|---|
