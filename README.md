@@ -35,11 +35,12 @@
 
 ## Features
 
-- **Start/stop/sestart** a Vault dev server with a click or keyboard shortcut.
+- **Start/stop/restart** a Vault dev server with a click or keyboard shortcut.
 - **Server readiness indicator** — green (unsealed), orange (sealed), red (stopped).
 - **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands for Terminal session or other use.
 - **Server status at a glance** — version, seal status, storage backend, address.
 - **macOS-native** — pure SwiftUI, lightweight, no Electron, no runtime dependencies.
+- **Fully sandboxed** — the main app runs inside the App Sandbox; privileged operations are delegated to a sandboxed XPC helper via `SMAppService`.
 - **launchd integration** — manages Vault through a proper LaunchAgent.
 - **Keyboard shortcuts** for every action (⌘S, ⌘R, ⌘I, ⌘Q).
 
@@ -71,16 +72,19 @@ Grab the latest DMG or zip from [**Releases**](https://github.com/brianshumate/v
 ### Build from source
 
 ```shell
-# Run in debug mode
+# Run in debug mode (XPC helper requires the .app bundle — see below)
 swift run
 
-# Build a release binary
+# Build both the main app and XPC helper
 swift build -c release
 
-# Build and ad-hoc sign a full .app bundle
+# Build and ad-hoc sign a full .app bundle (includes the XPC helper)
 ./build-app.sh release
 cp -r vmenu.app /Applications/
 ```
+
+> [!NOTE]
+> The XPC helper agent (`com.brianshumate.vmenu.helper`) requires a properly assembled `.app` bundle so that `SMAppService` can find its LaunchAgent plist at `Contents/Library/LaunchAgents/`. Use `./build-app.sh` to produce a complete bundle.
 
 ## Run tests
 
@@ -101,13 +105,46 @@ swift test
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build-app.sh release sign
 ```
 
+The build script signs both the XPC helper and the main binary with the same identity. The helper is signed first (inner component before outer bundle) with its own entitlements (`vmenuhelper/vmenuhelper.entitlements`).
+
 The build script reads the latest git tag (e.g. `v1.5`) and stamps it into `CFBundleShortVersionString` and `CFBundleVersion`. If no tag exists, the version defaults to the value already in `vmenu/Info.plist`.
 
 </details>
 
 ## How it works
 
-vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main window. It manages the Vault dev server through a launchd LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` subcommands. The app uses API calls to Vault for status and so on.
+vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main window.
+
+### Architecture
+
+The app uses a two-process architecture:
+
+| Component | Bundle path | Sandbox | Role |
+|---|---|---|---|
+| **Main app** (`vmenu`) | `Contents/MacOS/vmenu` | Sandboxed | UI, Vault HTTP API polling, clipboard |
+| **XPC helper** (`com.brianshumate.vmenu.helper`) | `Contents/MacOS/com.brianshumate.vmenu.helper` | Unsandboxed | `launchctl`, plist/log file I/O, `vault` binary discovery |
+
+The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice) at launch. launchd starts the helper on demand when the main app connects to its Mach service over XPC. The helper manages the Vault dev server through a LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` subcommands.
+
+The helper's launchd plist is embedded in the app bundle at `Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist`.
+
+The main app communicates with the Vault server directly over HTTPS for status polling (`/v1/sys/seal-status`, `/v1/sys/leader`) without spawning any processes.
+
+### XPC protocol
+
+All operations that the App Sandbox forbids are exposed through the `VmenuHelperProtocol` XPC interface:
+
+| Method | Operation |
+|---|---|
+| `findVaultPath` | Locate the `vault` binary on the system |
+| `createOrUpdatePlist` | Write/update the Vault LaunchAgent plist |
+| `bootstrapService` / `bootoutService` / `kickstartService` | launchctl lifecycle management |
+| `checkServiceStatus` | Check if the Vault LaunchAgent is loaded |
+| `readStartupLog` / `recreateStartupLog` | Read/reset log files for environment variable parsing |
+| `readCACertData` | Read CA certificate bytes for TLS trust evaluation |
+| `removeCACertFile` | Clean up stale dev-mode CA certificates |
+
+### Menu bar icon
 
 The menu bar icon reflects the current server state:
 
@@ -119,18 +156,22 @@ The menu bar icon reflects the current server state:
 
 ## Security model
 
-vmenu runs _without the App Sandbox_ because it needs to spawn `launchctl` processes and write to `~/Library/LaunchAgents/`, and these are operations the sandbox does not permit. The rationale and mitigation are documented in [`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements).
+The main vmenu app runs inside the **App Sandbox**. Operations that the sandbox forbids — process spawning (`launchctl`), file I/O outside the container (`~/Library/LaunchAgents/`, `~/Library/Logs/vmenu/`, CA cert files) — are delegated to a dedicated XPC helper agent. The entitlements for each component are documented in [`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements) and [`vmenuhelper/vmenuhelper.entitlements`](vmenuhelper/vmenuhelper.entitlements).
 
-That said vmenu does follow defense-in-depth with the following measures:
+| Component | Sandbox | Entitlements |
+|---|---|---|
+| Main app | Enabled | `network.client` (outbound HTTPS to `127.0.0.1:8200`) |
+| XPC helper | Disabled | Hardened runtime only (no sandbox) |
 
-- **Hardened runtime** enabled for all release builds.
-- **Explicitly disabled unsigned executable memory** and **library validation bypass**.
+Defense-in-depth measures:
+
+- **App Sandbox** on the main app restricts filesystem, process, and network access.
+- **Hardened Runtime** enabled for both the main app and the XPC helper.
+- **Explicitly disabled unsigned executable memory** and **library validation bypass** in both components.
 - **Ephemeral `URLSession`** use, so no credentials get cached to disk.
-- **CA certificate path validation** rejects symlinks, traversal, and paths outside allowed directories.
-- **Minimal attack surface**, and no document types, URL schemes, XPC services, or IPC endpoints.
-
-> [!NOTE]
-> A future architectural improvement can move `launchctl` operations into a sandboxed XPC helper (via `SMAppService`), allowing the main menu-bar app to run fully sandboxed.
+- **CA certificate path validation** in the helper rejects symlinks, traversal, world-writable directories, and files with unsafe ownership or permissions.
+- **Log file safety** — the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
+- **XPC isolation** — the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
 
 ## AI use disclaimer
 
