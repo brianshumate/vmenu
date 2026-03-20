@@ -494,6 +494,17 @@ class VaultManager: ObservableObject {
     }
   }
 
+  /// Stop all polling timers and release resources.
+  ///
+  /// Called on application termination to ensure timers don't fire after
+  /// the app has started shutting down.
+  func stopPolling() {
+    pollingTimer?.invalidate()
+    pollingTimer = nil
+    statusRefreshTimer?.invalidate()
+    statusRefreshTimer = nil
+  }
+
   /// Dismiss the MenuBarExtra popover so the status-bar icon remains
   /// clickable afterwards.
   ///
@@ -1468,7 +1479,7 @@ struct VaultMenuView: View {
 
       menuButton(
         title: String(
-          localized: "Display Server Status",
+          localized: "Show Server Details",
           comment: "Menu button to open the status window"
         ),
         icon: "chart.bar.doc.horizontal.fill",
@@ -1605,7 +1616,7 @@ struct AboutView: View {
           .font(.caption)
           .fontWeight(.medium)
           .foregroundStyle(.primary)
-          .tint(.blue)
+          .tint(Color(nsColor: .linkColor))
 
         Button(
           String(
@@ -1618,7 +1629,7 @@ struct AboutView: View {
         }
         .buttonStyle(.link)
         .font(.caption)
-        .tint(.blue)
+        .tint(Color(nsColor: .linkColor))
       }
 
     }
@@ -1844,6 +1855,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    // Stop polling timers to release resources
+    VaultManager.shared.stopPolling()
+    MenuBarVisibilityMonitor.shared.stopMonitoring()
+    // Invalidate XPC connection
     XPCClient.shared.invalidate()
   }
 
