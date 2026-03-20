@@ -50,7 +50,7 @@ Though **vmenu** is just a cute and small menu bar app, it packs a lot of though
 
 The menu bar icon has a colored dot in the center that reflects one of these possible Vault server states:
 
-| Icon color | State |
+| Icon | State |
 |---|---|
 | 🟢 Green | Vault is unsealed and ready for use. |
 | 🟠 Orange | Vault is sealed and not available for use until unsealed. |
