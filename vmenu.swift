@@ -375,8 +375,14 @@ func registerHelperAgent() {
     } catch {
         // Already registered is fine (e.g. across relaunches).
         let nsError = error as NSError
-        // kSMErrorAlreadyRegistered = 6 (ServiceManagement framework)
-        if nsError.domain == "SMAppService" && nsError.code == 1 {
+        // Observed values can vary across macOS releases / APIs:
+        // - legacy ServiceManagement: domain=com.apple.ServiceManagement, code=6
+        // - SMAppService-specific: domain=SMAppService, code=1
+        let isAlreadyRegistered =
+            (nsError.domain == "com.apple.ServiceManagement" && nsError.code == 6) ||
+            (nsError.domain == "SMAppService" && nsError.code == 1)
+
+        if isAlreadyRegistered {
             // Already registered — nothing to do.
         } else {
             logger.error("Failed to register helper agent: \(error.localizedDescription, privacy: .public)")
