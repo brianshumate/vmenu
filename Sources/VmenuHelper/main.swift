@@ -301,40 +301,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     // descriptor to verify ownership and type on the *actual* file we
     // opened — eliminating the TOCTOU window between validation and
     // deletion that the previous lstat + removeItem approach had.
-    let fd = open(path, O_RDONLY | O_NOFOLLOW)
-    guard fd >= 0 else {
-      if errno == ELOOP {
-        logger.warning("Refusing to remove — path is a symbolic link: \(path, privacy: .private)")
-      } else {
-        logger.warning("Refusing to remove — cannot open file: \(path, privacy: .private)")
-      }
-      reply(false)
-      return
-    }
-    // Capture the inode of the file we validated.
-    var statBuf = stat()
-    guard fstat(fd, &statBuf) == 0 else {
-      close(fd)
-      reply(false)
-      return
-    }
-    close(fd)
-    let validatedInode = statBuf.st_ino
-    let validatedDevice = statBuf.st_dev
-    // Verify it is a regular file, owned by us or root, not group/world-writable.
-    guard (statBuf.st_mode & S_IFMT) == S_IFREG else {
-      logger.warning("Refusing to remove — not a regular file: \(path, privacy: .private)")
-      reply(false)
-      return
-    }
-    let currentUID = getuid()
-    guard statBuf.st_uid == currentUID || statBuf.st_uid == 0 else {
-      logger.warning("Refusing to remove — not owned by current user or root: \(path, privacy: .private)")
-      reply(false)
-      return
-    }
-    if (statBuf.st_mode & S_IWGRP) != 0 || (statBuf.st_mode & S_IWOTH) != 0 {
-      logger.warning("Refusing to remove — group or world writable: \(path, privacy: .private)")
+    guard let validated = openAndValidateForRemoval(path: path) else {
       reply(false)
       return
     }
@@ -343,8 +310,8 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     // resorting to unlinkat on a parent directory fd.
     var preBuf = stat()
     guard lstat(path, &preBuf) == 0,
-          preBuf.st_ino == validatedInode,
-          preBuf.st_dev == validatedDevice,
+          preBuf.st_ino == validated.inode,
+          preBuf.st_dev == validated.device,
           (preBuf.st_mode & S_IFMT) == S_IFREG
     else {
       logger.warning("Refusing to remove — file changed between validation and removal: \(path, privacy: .private)")
@@ -358,6 +325,52 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       return
     }
     reply(true)
+  }
+
+  // MARK: - CA cert removal helpers
+
+  /// Result of validating a file descriptor for safe removal.
+  private struct ValidatedFile {
+    let inode: ino_t
+    let device: dev_t
+  }
+
+  /// Open the file at `path` with `O_NOFOLLOW`, verify via `fstat` that it
+  /// is a regular file owned by the current user (or root) and not
+  /// group/world-writable, then return the validated inode and device.
+  ///
+  /// Returns `nil` (and logs) if any check fails.
+  private func openAndValidateForRemoval(path: String) -> ValidatedFile? {
+    let fileDescriptor = open(path, O_RDONLY | O_NOFOLLOW)
+    guard fileDescriptor >= 0 else {
+      if errno == ELOOP {
+        logger.warning("Refusing to remove — path is a symbolic link: \(path, privacy: .private)")
+      } else {
+        logger.warning("Refusing to remove — cannot open file: \(path, privacy: .private)")
+      }
+      return nil
+    }
+    var statBuf = stat()
+    guard fstat(fileDescriptor, &statBuf) == 0 else {
+      close(fileDescriptor)
+      return nil
+    }
+    close(fileDescriptor)
+    // Verify it is a regular file, owned by us or root, not group/world-writable.
+    guard (statBuf.st_mode & S_IFMT) == S_IFREG else {
+      logger.warning("Refusing to remove — not a regular file: \(path, privacy: .private)")
+      return nil
+    }
+    let currentUID = getuid()
+    guard statBuf.st_uid == currentUID || statBuf.st_uid == 0 else {
+      logger.warning("Refusing to remove — not owned by current user or root: \(path, privacy: .private)")
+      return nil
+    }
+    if (statBuf.st_mode & S_IWGRP) != 0 || (statBuf.st_mode & S_IWOTH) != 0 {
+      logger.warning("Refusing to remove — group or world writable: \(path, privacy: .private)")
+      return nil
+    }
+    return ValidatedFile(inode: statBuf.st_ino, device: statBuf.st_dev)
   }
 
   // MARK: - Private helpers
@@ -421,12 +434,12 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
         vaultPath,
         "server",
         "-dev",
-        "-dev-tls",
+        "-dev-tls"
       ],
       "RunAtLoad": false,
       "KeepAlive": false,
       "StandardOutPath": startupLogURL.path,
-      "StandardErrorPath": operationsLogURL.path,
+      "StandardErrorPath": operationsLogURL.path
     ] as [String: Any]
   }
 
@@ -539,18 +552,18 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     // a symlink, then fstat the descriptor to verify the file is regular
     // and within size limits — eliminating the TOCTOU window that the
     // previous lstat + String(contentsOf:) approach had.
-    let fd = open(path, O_RDONLY | O_NOFOLLOW)
-    guard fd >= 0 else {
+    let logFileDescriptor = open(path, O_RDONLY | O_NOFOLLOW)
+    guard logFileDescriptor >= 0 else {
       // ENOENT (file doesn't exist yet) is expected before Vault starts.
       if errno != ENOENT {
         logger.error("vmenu-helper: refusing to read \(path) — open failed (errno \(errno))")
       }
       return nil
     }
-    defer { close(fd) }
+    defer { close(logFileDescriptor) }
 
     var statBuf = stat()
-    guard fstat(fd, &statBuf) == 0 else { return nil }
+    guard fstat(logFileDescriptor, &statBuf) == 0 else { return nil }
 
     // Must be a regular file.
     guard (statBuf.st_mode & S_IFMT) == S_IFREG else {
@@ -568,7 +581,7 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     var buffer = Data(count: fileSize)
     let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
       guard let base = rawBuffer.baseAddress else { return 0 }
-      return read(fd, base, fileSize)
+      return read(logFileDescriptor, base, fileSize)
     }
     guard bytesRead == fileSize else { return nil }
 
