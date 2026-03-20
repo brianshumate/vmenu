@@ -68,7 +68,7 @@ A Vault dev mode server managed with **vmenu** writes to 2 log files under your 
 
 ## Prerequisites
 
-- **vmenu** requires **macOS 13 (Ventura) or later** through macOS 26 (Tahoe).
+- **vmenu** requires **macOS 13 (Ventura) or later** and is tested on macOS 26  (Tahoe).
 
 - **vmenu** needs the `vault` binary installed and available in your `PATH`.
 
@@ -207,7 +207,7 @@ The app also uses the these defense-in-depth measures:
 
 Thanks to my friends at HashiCorp for inspiring me to build **vmenu**. I hope you also find it useful.
 
-**vmenu** is an open source and personal project by [Brian Shumate](https://brianshumate.com/), and is not officially affiliated with Vault or HashiCorp in any way.
+**vmenu** is an open source and personal project by [Brian Shumate](https://brianshumate.com/), and is not officially affiliated with Vault or HashiCorp in any way. As a 100% personal project, **vmenu** is not open to any contributions or feedback.
 
 ## AI use disclaimer
 
