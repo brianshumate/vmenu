@@ -162,27 +162,11 @@ if [ "${SIGN}" = "sign" ]; then
     echo "Verifying signature..."
     codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 else
-    # Ad-hoc sign for local use (still apply entitlements so sandbox/XPC behavior
-    # matches distribution builds).
+    # Ad-hoc sign for local use
     # Sign helper first (inner before outer)
-    codesign --force --options runtime \
-        --entitlements "${HELPER_ENTITLEMENTS}" \
-        --sign - \
-        "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
-
-    # Sign main binary with app entitlements
-    codesign --force --options runtime \
-        --entitlements "${ENTITLEMENTS}" \
-        --sign - \
-        "${APP_DIR}/Contents/MacOS/${APP_NAME}"
-
-    # Sign bundle container
-    codesign --force --options runtime \
-        --entitlements "${ENTITLEMENTS}" \
-        --sign - \
-        "${APP_DIR}"
-
-    echo "Ad-hoc signed with entitlements (use './build-app.sh release sign' for distribution signing)."
+    codesign --force --sign - "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+    codesign --force --deep --sign - "${APP_DIR}"
+    echo "Ad-hoc signed (use './build-app.sh release sign' for distribution signing)."
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
