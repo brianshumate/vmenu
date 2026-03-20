@@ -18,7 +18,7 @@
 
 ---
 
-**vmenu** lives in your menu bar and gives you one-click control over a [Vault](https://www.vaultproject.io/) dev mode server. Start, stop, restart, check status, and copy environment variables — without ever opening a terminal.
+**vmenu** lives in your menu bar and gives you one-click control over a [Vault](https://www.vaultproject.io/) dev mode server. Start, stop, restart, check status, and copy environment variables, all without ever opening your terminal.
 
 ## Screenshots
 
@@ -35,40 +35,42 @@
 
 ## Features
 
+Though **vmenu** is just a cute and small menu bar app, it packs a lot of thoughtful features into a minimal surface area. Here are some of the things you can do:
+
 - **Start/stop/restart** a Vault dev server with a click or keyboard shortcut.
-- **Server readiness indicator** — green (unsealed), orange (sealed), red (stopped).
-- **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands for Terminal session or other use.
-- **Server status at a glance** — version, seal status, storage backend, address.
+- **Server readiness menu bar icon indicator** — green (unsealed), orange (sealed), red (stopped).
+- **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands for Terminal session use. You can also copy or view the initial root token value right from the menu.
+- **Server status at a glance**: Vault version, seal status, storage backend, address, and unseal key along with raw status output.
 - **macOS-native** — pure SwiftUI, lightweight, no Electron, no runtime dependencies.
-- **Fully sandboxed** — the main app runs inside the App Sandbox; privileged operations are delegated to a sandboxed XPC helper via `SMAppService`.
+- **Fully sandboxed** — the main app runs inside the App Sandbox; privileged operations are delegated to a sand-boxed XPC helper via `SMAppService`.
 - **launchd integration** — manages Vault through a proper LaunchAgent.
-- **Keyboard shortcuts** for every action (⌘S, ⌘R, ⌘I, ⌘Q).
+- **Keyboard shortcuts** for every menu action (⌘S, ⌘R, ⌘I, ⌘Q).
 
 ### Menu bar icon
 
-The menu bar icon is a small inverted triangle with a colored dot in the center that reflects one of these possible Vault server states:
+The menu bar icon has a colored dot in the center that reflects one of these possible Vault server states:
 
 | Icon color | State |
 |---|---|
-| 🟢 Green | Vault is unsealed and ready |
-| 🟠 Orange | Vault is sealed |
-| 🔴 Red | Vault is stopped |
+| 🟢 Green | Vault is unsealed and ready for use. |
+| 🟠 Orange | Vault is sealed and not available for use until unsealed. |
+| 🔴 Red | Vault is stopped and not available for use. |
 
 ### Logs
 
-A Vault dev mode server managed with vmenu writes to 2 log files under your home folder:
+A Vault dev mode server managed with **vmenu** writes to 2 log files under your home folder at these paths:
 
 - `$HOME/Library/Logs/vmenu/vault.startup.log`
 - `$HOME/Library/Logs/vmenu/vault.operations.log`
 
 > [!TIP]
-> The `vault.operations.log` contains useful details logged when you are actually using Vault, whereas the `vault.startup.log` contains just the server startup information.
+> The `vault.operations.log` contains useful details written when you actually use Vault, whereas the `vault.startup.log` contains just the server startup information.
 
 ## Prerequisites
 
-vmenu needs the `vault` binary installed and available in your `PATH`.
+**vmenu** needs the `vault` binary installed and available in your `PATH`.
 
-If you do not have Vault, you can install with Homebrew:
+If you do not have Vault, you can install the binary with Homebrew:
 
 ```shell
 brew install hashicorp/tap/vault
@@ -77,7 +79,7 @@ brew install hashicorp/tap/vault
 If you do not use Homebrew, consider downloading a binary directly from [releases.hashicorp.com/vault](https://releases.hashicorp.com/vault), and installing in your PATH using your preferred method.
 
 > [!TIP]
-> vmenu requires **macOS 13 (Ventura) or later** through macOS 26 (Tahoe).
+> **vmenu** requires **macOS 13 (Ventura) or later** through macOS 26 (Tahoe).
 
 ## Install
 
@@ -114,7 +116,7 @@ cp -r vmenu.app /Applications/
 
 ## Run tests
 
-vmenu ships with a full test suite; here's how to run the tests:
+**vmenu** ships with a test suite; here's how to run the tests:
 
 ```shell
 swift test
@@ -123,12 +125,17 @@ swift test
 <details>
 <summary><strong>Developer ID signing (for distribution)</strong></summary>
 
-```shell
-# Uses the first "Developer ID Application" identity in your keychain
-./build-app.sh release sign
+Build with the first "Developer ID Application" identity in your keychain.
 
-# Or specify an identity explicitly
-CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build-app.sh release sign
+```shell
+./build-app.sh release sign
+```
+
+Build and explicitly specify an identity.
+
+```shell
+export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"; \
+./build-app.sh release sign
 ```
 
 The build script signs both the XPC helper and the main binary with the same identity. The helper is signed first (inner component before outer bundle) with its own entitlements (`vmenuhelper/vmenuhelper.entitlements`).
@@ -139,7 +146,7 @@ The build script reads the latest git tag (e.g. `v1.5`) and stamps it into `CFBu
 
 ## How it works and technical details
 
-vmenu is a menu bar–only app (`LSUIElement = true`) — no Dock icon, no main window.
+**vmenu** is a menu bar–only app (`LSUIElement = true`), so it has no Dock icon or main window.
 
 ### Architecture
 
@@ -150,7 +157,9 @@ The app uses a two-process architecture for separation of concerns and defense i
 | **Main app** | vmenu | Sandboxed | UI, Vault HTTP API polling, clipboard |
 | **XPC helper** | com.brianshumate.vmenu.helper | Unsandboxed | launchctl, plist/log file I/O, vault binary discovery |
 
-The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice) at launch. launchd starts the helper on demand when the main app connects to its Mach service over XPC. The helper manages the Vault dev server through a LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` subcommands.
+The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice) at launch. launchd starts the helper on demand when the main app connects to its Mach service over XPC.
+
+The helper manages the Vault dev server through a LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` sub-commands.
 
 The helper's launchd plist is embedded in the app bundle at `Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist`.
 
@@ -172,9 +181,9 @@ All operations that the App Sandbox forbids are exposed through the `VmenuHelper
 
 ## Security model
 
-vmenu is for managing a dev mode server, but it tries to keep security in focus while doing so.
+**vmenu** is for managing a dev mode server, but it still strives to keep security in focus while doing so.
 
-The main vmenu app runs inside the **App Sandbox**.
+The main **vmenu** app runs inside an **App Sandbox**.
 
 Operations that the sandbox forbids, like process spawning (`launchctl`), file I/O outside the container (`~/Library/LaunchAgents/`, `~/Library/Logs/vmenu/`, CA cert files) are delegated to a dedicated XPC helper agent.
 
@@ -195,9 +204,15 @@ The app also uses the these defense-in-depth measures:
 - **Log file safety** — the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
 - **XPC isolation** — the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
 
+## Acknowledgments and disclaimers
+
+Thanks to my friends at HashiCorp for inspiring me to build **vmenu**. I hope you also find it useful.
+
+**vmenu** is an open source and personal project by [Brian Shumate](https://brianshumate.com/), and is not officially affiliated with Vault or HashiCorp in any way.
+
 ## AI use disclaimer
 
-This codebase has been built with the support of coding agents.
+The author builds and manages this codebase with the support of coding agents.
 
 ## License
 
