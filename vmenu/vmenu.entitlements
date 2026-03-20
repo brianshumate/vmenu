@@ -1,5 +1,6 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   vmenu.entitlements — Fully sandboxed main app
 
@@ -12,24 +13,17 @@
   - com.apple.security.app-sandbox:  ENABLED — full sandbox.
   - com.apple.security.network.client:  Outbound connections to the local
     Vault HTTPS endpoint (127.0.0.1:8200).
-  - com.apple.security.temporary-exception.mach-lookup.global-name:
-    Allow mach-lookup for the bundled helper service
-    (com.brianshumate.vmenu.helper).
   - Hardened Runtime protections remain active.
 -->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.app-sandbox</key>
-    <true/>
+    <true />
     <key>com.apple.security.network.client</key>
-    <true/>
-    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
-    <array>
-        <string>com.brianshumate.vmenu.helper</string>
-    </array>
+    <true />
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <false/>
+    <false />
     <key>com.apple.security.cs.disable-library-validation</key>
-    <false/>
+    <false />
 </dict>
 </plist>
