@@ -1,16 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  vmenuhelper.entitlements — XPC helper agent
-
-  The helper runs OUTSIDE the App Sandbox so it can:
-  - Spawn /bin/launchctl to manage the Vault LaunchAgent.
-  - Read/write ~/Library/LaunchAgents/ and ~/Library/Logs/vmenu/.
-  - Search the filesystem for the vault binary.
-
-  The App Sandbox is explicitly disabled. Hardened Runtime protections
-  still apply (no unsigned executable memory, library validation enabled).
--->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.app-sandbox</key>
