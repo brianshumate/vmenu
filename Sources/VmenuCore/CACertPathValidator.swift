@@ -93,9 +93,9 @@ public func validateCACertPath(_ path: String) -> Bool {
 /// file descriptor via `fstat()` to eliminate TOCTOU races.
 ///
 /// Returns `true` if the descriptor passes all checks.
-private func validateFileDescriptor(_ fd: Int32) -> Bool {
+private func validateFileDescriptor(_ fileDescriptor: Int32) -> Bool {
   var statBuf = stat()
-  guard fstat(fd, &statBuf) == 0 else {
+  guard fstat(fileDescriptor, &statBuf) == 0 else {
     return false
   }
 
@@ -153,21 +153,21 @@ public func safeReadCACertData(_ path: String) -> Data? {
 
   // 2. Open with O_NOFOLLOW — fails with ELOOP if path is a symlink,
   //    closing the TOCTOU window between lstat and open.
-  let fd = open(path, O_RDONLY | O_NOFOLLOW)
-  guard fd >= 0 else {
+  let fileDescriptor = open(path, O_RDONLY | O_NOFOLLOW)
+  guard fileDescriptor >= 0 else {
     return nil
   }
-  defer { close(fd) }
+  defer { close(fileDescriptor) }
 
   // 3. Validate ownership and permissions on the open descriptor.
-  guard validateFileDescriptor(fd) else {
+  guard validateFileDescriptor(fileDescriptor) else {
     return nil
   }
 
   // 4. Read from the validated descriptor.
   //    Use fstat to get the size, then read in one call.
   var statBuf = stat()
-  guard fstat(fd, &statBuf) == 0 else {
+  guard fstat(fileDescriptor, &statBuf) == 0 else {
     return nil
   }
   let fileSize = Int(statBuf.st_size)
@@ -178,7 +178,7 @@ public func safeReadCACertData(_ path: String) -> Data? {
   var buffer = Data(count: fileSize)
   let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
     guard let baseAddress = rawBuffer.baseAddress else { return 0 }
-    return read(fd, baseAddress, fileSize)
+    return read(fileDescriptor, baseAddress, fileSize)
   }
 
   guard bytesRead == fileSize else {
