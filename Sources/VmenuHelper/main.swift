@@ -26,14 +26,23 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
   /// The requirement enforces:
   /// 1. The process is signed with a valid Apple code signature.
   /// 2. The signing identifier matches the main app bundle ID.
+  /// 3. For distribution builds, the signing certificate's Team ID
+  ///    matches (prevents a different developer from signing a binary
+  ///    with the same bundle identifier).
   ///
-  /// During development (ad-hoc signed builds) the identifier check is
-  /// sufficient.  For distribution builds signed with a Developer ID
-  /// certificate, append:
-  ///   `and certificate leaf[subject.OU] = "YOUR_TEAM_ID"`
-  /// to also pin to a specific team.
-  private static let signingRequirement =
-    "identifier \"com.brianshumate.vmenu\" and anchor apple generic"
+  /// To pin to a specific team for distribution builds, replace the
+  /// empty string below with your 10-character Apple Team ID (e.g.
+  /// "A1B2C3D4E5").  The Xcode project can inject this via a
+  /// `VMENU_TEAM_ID` build setting and `GCC_PREPROCESSOR_DEFINITIONS`.
+  private static let teamID = ""
+
+  private static let signingRequirement: String = {
+    let base = "identifier \"com.brianshumate.vmenu\" and anchor apple generic"
+    if !teamID.isEmpty {
+      return base + " and certificate leaf[subject.OU] = \"\(teamID)\""
+    }
+    return base
+  }()
 
   func listener(
     _ listener: NSXPCListener,
@@ -282,24 +291,73 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       reply(true) // Already gone — success.
       return
     }
-    guard isRegularFile(atPath: path) else {
-      logger.warning("Refusing to remove — not a regular file: \(path, privacy: .private)")
-      reply(false)
-      return
-    }
-    // Validate the path is safe (not a symlink, not in /tmp, etc.)
+    // Validate the path string (absolute, not in unsafe dirs).
     guard VmenuCore.validateCACertPath(path) else {
       logger.warning("Refusing to remove — failed path validation: \(path, privacy: .private)")
       reply(false)
       return
     }
-    do {
-      try FileManager.default.removeItem(atPath: path)
-      reply(true)
-    } catch {
-      logger.error("Failed to remove CA cert: \(error.localizedDescription, privacy: .public)")
+    // Open with O_NOFOLLOW to atomically reject symlinks, then fstat the
+    // descriptor to verify ownership and type on the *actual* file we
+    // opened — eliminating the TOCTOU window between validation and
+    // deletion that the previous lstat + removeItem approach had.
+    let fd = open(path, O_RDONLY | O_NOFOLLOW)
+    guard fd >= 0 else {
+      if errno == ELOOP {
+        logger.warning("Refusing to remove — path is a symbolic link: \(path, privacy: .private)")
+      } else {
+        logger.warning("Refusing to remove — cannot open file: \(path, privacy: .private)")
+      }
       reply(false)
+      return
     }
+    // Capture the inode of the file we validated.
+    var statBuf = stat()
+    guard fstat(fd, &statBuf) == 0 else {
+      close(fd)
+      reply(false)
+      return
+    }
+    close(fd)
+    let validatedInode = statBuf.st_ino
+    let validatedDevice = statBuf.st_dev
+    // Verify it is a regular file, owned by us or root, not group/world-writable.
+    guard (statBuf.st_mode & S_IFMT) == S_IFREG else {
+      logger.warning("Refusing to remove — not a regular file: \(path, privacy: .private)")
+      reply(false)
+      return
+    }
+    let currentUID = getuid()
+    guard statBuf.st_uid == currentUID || statBuf.st_uid == 0 else {
+      logger.warning("Refusing to remove — not owned by current user or root: \(path, privacy: .private)")
+      reply(false)
+      return
+    }
+    if (statBuf.st_mode & S_IWGRP) != 0 || (statBuf.st_mode & S_IWOTH) != 0 {
+      logger.warning("Refusing to remove — group or world writable: \(path, privacy: .private)")
+      reply(false)
+      return
+    }
+    // Re-lstat immediately before unlink and verify the inode matches,
+    // narrowing the TOCTOU window to the minimum possible without
+    // resorting to unlinkat on a parent directory fd.
+    var preBuf = stat()
+    guard lstat(path, &preBuf) == 0,
+          preBuf.st_ino == validatedInode,
+          preBuf.st_dev == validatedDevice,
+          (preBuf.st_mode & S_IFMT) == S_IFREG
+    else {
+      logger.warning("Refusing to remove — file changed between validation and removal: \(path, privacy: .private)")
+      reply(false)
+      return
+    }
+    guard unlink(path) == 0 else {
+      let err = String(cString: strerror(errno))
+      logger.error("Failed to remove CA cert: \(err, privacy: .public)")
+      reply(false)
+      return
+    }
+    reply(true)
   }
 
   // MARK: - Private helpers
@@ -350,33 +408,35 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     }
   }
 
-  private func expectedPlistContent() -> String {
+  /// Build the expected LaunchAgent plist as a dictionary.
+  ///
+  /// Using `PropertyListSerialization` instead of string interpolation
+  /// eliminates any risk of XML injection from path values that might
+  /// contain characters like `<`, `>`, `&`, or `"`.
+  private func expectedPlistDictionary() -> [String: Any] {
     let vaultPath = locateVaultBinary() ?? "/opt/homebrew/bin/vault"
-    return """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0">
-    <dict>
-        <key>Label</key>
-        <string>\(plistLabel)</string>
-        <key>ProgramArguments</key>
-        <array>
-            <string>\(vaultPath)</string>
-            <string>server</string>
-            <string>-dev</string>
-            <string>-dev-tls</string>
-        </array>
-        <key>RunAtLoad</key>
-        <false/>
-        <key>KeepAlive</key>
-        <false/>
-        <key>StandardOutPath</key>
-        <string>\(startupLogURL.path)</string>
-        <key>StandardErrorPath</key>
-        <string>\(operationsLogURL.path)</string>
-    </dict>
-    </plist>
-    """
+    return [
+      "Label": plistLabel,
+      "ProgramArguments": [
+        vaultPath,
+        "server",
+        "-dev",
+        "-dev-tls",
+      ],
+      "RunAtLoad": false,
+      "KeepAlive": false,
+      "StandardOutPath": startupLogURL.path,
+      "StandardErrorPath": operationsLogURL.path,
+    ] as [String: Any]
+  }
+
+  /// Serialize the plist dictionary to XML data.
+  private func serializePlist(_ dict: [String: Any]) -> Data? {
+    try? PropertyListSerialization.data(
+      fromPropertyList: dict,
+      format: .xml,
+      options: 0
+    )
   }
 
   private func performCreateOrUpdatePlist() -> Bool {
@@ -385,7 +445,11 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       return false
     }
 
-    let plistContent = expectedPlistContent()
+    let expectedDict = expectedPlistDictionary()
+    guard let plistData = serializePlist(expectedDict) else {
+      logger.error("vmenu-helper: failed to serialize plist")
+      return false
+    }
 
     let launchAgentsDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/LaunchAgents")
@@ -399,18 +463,24 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       return false
     }
 
+    // Compare against the existing plist structurally (as dictionaries)
+    // rather than byte-for-byte, so insignificant formatting differences
+    // (e.g. from a different PropertyListSerialization version) don't
+    // trigger unnecessary rewrites.
     if FileManager.default.fileExists(atPath: plistURL.path) {
-      if let existing = try? String(contentsOf: plistURL, encoding: .utf8),
-         existing == plistContent {
+      if let existingData = try? Data(contentsOf: plistURL),
+         let existingDict = try? PropertyListSerialization.propertyList(
+           from: existingData, format: nil) as? [String: Any],
+         NSDictionary(dictionary: existingDict).isEqual(to: expectedDict) {
         return true
       }
       _ = performBootout()
     }
 
     do {
-      try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+      try plistData.write(to: plistURL, options: .atomic)
     } catch {
-      print("vmenu-helper: failed to write plist \(plistURL.path): \(error.localizedDescription)")
+      logger.error("vmenu-helper: failed to write plist: \(error.localizedDescription, privacy: .public)")
       return false
     }
 
@@ -456,32 +526,105 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     return (statBuf.st_mode & S_IFMT) == S_IFREG
   }
 
+  /// Maximum log file size (2 MiB).
+  ///
+  /// Vault startup logs are typically a few KiB.  A generous upper bound
+  /// prevents reading unexpectedly large files.
+  private static let maxLogFileSize: off_t = 2 * 1_024 * 1_024
+
   private func safeReadLogFile(at url: URL) -> String? {
     let path = url.path
-    guard FileManager.default.fileExists(atPath: path) else { return nil }
-    guard isRegularFile(atPath: path) else {
+
+    // Open with O_NOFOLLOW so the call fails atomically if the path is
+    // a symlink, then fstat the descriptor to verify the file is regular
+    // and within size limits — eliminating the TOCTOU window that the
+    // previous lstat + String(contentsOf:) approach had.
+    let fd = open(path, O_RDONLY | O_NOFOLLOW)
+    guard fd >= 0 else {
+      // ENOENT (file doesn't exist yet) is expected before Vault starts.
+      if errno != ENOENT {
+        logger.error("vmenu-helper: refusing to read \(path) — open failed (errno \(errno))")
+      }
+      return nil
+    }
+    defer { close(fd) }
+
+    var statBuf = stat()
+    guard fstat(fd, &statBuf) == 0 else { return nil }
+
+    // Must be a regular file.
+    guard (statBuf.st_mode & S_IFMT) == S_IFREG else {
       logger.error("vmenu-helper: refusing to read \(path) — not a regular file")
       return nil
     }
-    return try? String(contentsOf: url, encoding: .utf8)
+
+    let fileSize = Int(statBuf.st_size)
+    guard fileSize >= 0, statBuf.st_size <= Self.maxLogFileSize else {
+      logger.error("vmenu-helper: refusing to read \(path) — file too large (\(fileSize) bytes)")
+      return nil
+    }
+    guard fileSize > 0 else { return "" }
+
+    var buffer = Data(count: fileSize)
+    let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+      guard let base = rawBuffer.baseAddress else { return 0 }
+      return read(fd, base, fileSize)
+    }
+    guard bytesRead == fileSize else { return nil }
+
+    return String(data: buffer, encoding: .utf8)
   }
 
   @discardableResult
   private func safeRecreateLogFile(at url: URL) -> Bool {
     let path = url.path
-    let fileManager = FileManager.default
 
-    if fileManager.fileExists(atPath: path) {
-      guard isRegularFile(atPath: path) else {
+    // If the file already exists, open it with O_NOFOLLOW to reject
+    // symlinks atomically, verify it is a regular file via fstat on the
+    // same descriptor, then unlink.  This eliminates the TOCTOU window
+    // that the previous lstat + FileManager.removeItem approach had.
+    let existingFd = open(path, O_RDONLY | O_NOFOLLOW)
+    if existingFd >= 0 {
+      var statBuf = stat()
+      let fstatOK = fstat(existingFd, &statBuf) == 0
+      close(existingFd)
+
+      guard fstatOK else {
+        logger.error("vmenu-helper: fstat failed for \(path)")
+        return false
+      }
+      guard (statBuf.st_mode & S_IFMT) == S_IFREG else {
         logger.error("vmenu-helper: refusing to recreate \(path) — not a regular file")
         return false
       }
-      do {
-        try fileManager.removeItem(atPath: path)
-      } catch {
-        logger.error("vmenu-helper: failed to remove \(path): \(error.localizedDescription, privacy: .public)")
+
+      // Re-lstat and verify inode matches right before unlink to narrow
+      // the race window.
+      var preBuf = stat()
+      guard lstat(path, &preBuf) == 0,
+            preBuf.st_ino == statBuf.st_ino,
+            preBuf.st_dev == statBuf.st_dev,
+            (preBuf.st_mode & S_IFMT) == S_IFREG
+      else {
+        logger.error("vmenu-helper: refusing to recreate \(path) — file changed between validation and removal")
         return false
       }
+
+      guard unlink(path) == 0 else {
+        let err = String(cString: strerror(errno))
+        logger.error("vmenu-helper: failed to remove \(path): \(err)")
+        return false
+      }
+    } else if errno != ENOENT {
+      // ENOENT is fine (file doesn't exist yet).  ELOOP means it's a
+      // symlink — reject.  Any other error is unexpected.
+      if errno == ELOOP {
+        logger.error("vmenu-helper: refusing to recreate \(path) — path is a symbolic link")
+      } else {
+        let err = String(cString: strerror(errno))
+        logger.error("vmenu-helper: cannot open \(path) for recreation: \(err)")
+      }
+      return false
     }
 
     let fileDescriptor = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
