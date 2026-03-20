@@ -69,13 +69,59 @@ cp "${SCRIPT_DIR}/vmenuhelper/${HELPER_NAME}.plist" \
 printf 'APPL????' > "${APP_DIR}/Contents/PkgInfo"
 
 # ── App icon ─────────────────────────────────────────────────────────────────
-# Generate AppIcon.icns from source SVG layers at build time.
-# All sizes are rendered from vmenu/icon-layers/variants/default.svg so the
-# .icns always matches the asset catalog default variant without manual upkeep.
+# Two complementary steps, run in order so the final .icns always has all sizes:
+#
+# Step 1 — Assets.car (CFBundleIconName / adaptive-icon variants)
+#   Compile Assets.xcassets with actool so macOS can load the appearance-aware
+#   variants (default, dark, high-contrast) at runtime.
+#   A raw .xcassets directory is NOT read by the OS — only a compiled .car works.
+#   actool also emits its own AppIcon.icns, which is replaced in Step 2.
+#   Falls back to copying the raw catalog if xcrun/actool is unavailable.
+#
+# Step 2 — AppIcon.icns (CFBundleIconFile)
+#   Generate a full-resolution .icns from the source SVG at build time so the
+#   Finder/Dock icon always matches the source without manual upkeep.
+#   All ten canonical macOS sizes are rendered from default.svg.
+#   Running after actool ensures our version (10 sizes) is not overwritten by
+#   actool's minimal single-slot output.
+#   Falls back to the pre-built vmenu/AppIcon.icns when rsvg-convert is absent.
 ICON_SRC="${SCRIPT_DIR}/vmenu/icon-layers/variants/default.svg"
 ICONSET_DIR="${SCRIPT_DIR}/vmenu/AppIcon.iconset"
 ICNS_OUT="${APP_DIR}/Contents/Resources/AppIcon.icns"
+XCASSETS_SRC="${SCRIPT_DIR}/vmenu/Assets.xcassets"
+ACTOOL_PARTIAL_PLIST="${APP_DIR}/Contents/Resources/actool-partial.plist"
 
+# Step 1: compile asset catalog with actool → Assets.car + appearance-variant icons.
+# macOS requires a compiled .car file to honour CFBundleIconName and load adaptive
+# icon variants (dark, high-contrast).  Copying the raw .xcassets directory does
+# nothing — the OS never reads uncompiled asset catalogs at runtime.
+if [ -d "${XCASSETS_SRC}" ] && command -v xcrun &>/dev/null && xcrun actool --version &>/dev/null 2>&1; then
+    echo "Compiling asset catalog with actool..."
+    xcrun actool \
+        --output-format human-readable-text \
+        --notices \
+        --warnings \
+        --platform macosx \
+        --minimum-deployment-target 13.0 \
+        --target-device mac \
+        --app-icon AppIcon \
+        --output-partial-info-plist "${ACTOOL_PARTIAL_PLIST}" \
+        --compile "${APP_DIR}/Contents/Resources" \
+        "${XCASSETS_SRC}" 2>&1 | grep -v "^$" || true
+    # Remove the temporary partial plist — Info.plist already declares the keys.
+    rm -f "${ACTOOL_PARTIAL_PLIST}"
+    echo "Compiled asset catalog (Assets.car, adaptive icon variants included)."
+elif [ -d "${XCASSETS_SRC}" ]; then
+    # actool unavailable — copy the raw catalog as a last resort.
+    # CFBundleIconName will not resolve appearance variants, but the .icns
+    # (CFBundleIconFile) still provides the Finder/Dock icon.
+    cp -R "${XCASSETS_SRC}" "${APP_DIR}/Contents/Resources/Assets.xcassets"
+    echo "Warning: actool unavailable — copied raw asset catalog (install Xcode Command Line Tools for compiled .car support)."
+fi
+
+# Step 2: build AppIcon.icns (runs after actool to overwrite actool's minimal output).
+# actool only generates sizes it can derive from the single 1024×1024 asset catalog
+# entry; our rsvg-convert path produces all ten canonical sizes from the source SVG.
 if [ -f "${ICON_SRC}" ] && command -v rsvg-convert &>/dev/null && command -v iconutil &>/dev/null; then
     echo "Building AppIcon.icns from source SVG layers..."
     rm -rf "${ICONSET_DIR}"
@@ -85,7 +131,7 @@ if [ -f "${ICON_SRC}" ] && command -v rsvg-convert &>/dev/null && command -v ico
         local name="$1" px="$2"
         rsvg-convert --width "${px}" --height "${px}" --keep-aspect-ratio \
             --output "${ICONSET_DIR}/${name}" "${ICON_SRC}"
-        # Tag with sRGB profile
+        # Tag with sRGB colour profile so Finder renders colours correctly.
         sips --matchTo '/System/Library/ColorSync/Profiles/sRGB Profile.icc' \
             "${ICONSET_DIR}/${name}" --out "${ICONSET_DIR}/${name}" 2>/dev/null || true
     }
@@ -105,17 +151,11 @@ if [ -f "${ICON_SRC}" ] && command -v rsvg-convert &>/dev/null && command -v ico
     rm -rf "${ICONSET_DIR}"
     echo "Included app icon (.icns, built from SVG layers)."
 elif [ -f "${SCRIPT_DIR}/vmenu/AppIcon.icns" ]; then
-    # Fallback: use pre-built .icns if rsvg-convert / iconutil are unavailable
+    # Fallback: use pre-built .icns if rsvg-convert / iconutil are unavailable.
     cp "${SCRIPT_DIR}/vmenu/AppIcon.icns" "${ICNS_OUT}"
     echo "Included app icon (.icns, pre-built fallback — install rsvg-convert for source-derived builds)."
 else
     echo "Warning: AppIcon.icns not found and rsvg-convert unavailable. App will use default icon."
-fi
-
-# Copy asset catalog (CFBundleIconName / appearance-variant icon support)
-if [ -d "${SCRIPT_DIR}/vmenu/Assets.xcassets" ]; then
-    cp -R "${SCRIPT_DIR}/vmenu/Assets.xcassets" "${APP_DIR}/Contents/Resources/Assets.xcassets"
-    echo "Included asset catalog (default + dark + clear + tinted variants)."
 fi
 
 # ── Stamp version from git tag (if available) ────────────────────────────────
