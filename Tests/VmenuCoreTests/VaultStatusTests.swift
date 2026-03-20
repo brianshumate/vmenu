@@ -132,12 +132,12 @@ final class VaultStatusTests: XCTestCase {
     let output = """
     Key             Value
     ---             -----
-    Version         1.18.0
+    Version         1.19.0
     """
 
     let status = VaultStatus.parse(from: output)
 
-    XCTAssertEqual(status.version, "1.18.0")
+    XCTAssertEqual(status.version, "1.19.0")
     XCTAssertEqual(status.sealType, "-")
     XCTAssertEqual(status.sealed, "-")
   }
