@@ -68,7 +68,9 @@ A Vault dev mode server managed with **vmenu** writes to 2 log files under your 
 
 ## Prerequisites
 
-**vmenu** needs the `vault` binary installed and available in your `PATH`.
+- **vmenu** requires **macOS 13 (Ventura) or later** through macOS 26 (Tahoe).
+
+- **vmenu** needs the `vault` binary installed and available in your `PATH`.
 
 If you do not have Vault, you can install the binary with Homebrew:
 
@@ -77,9 +79,6 @@ brew install hashicorp/tap/vault
 ```
 
 If you do not use Homebrew, consider downloading a binary directly from [releases.hashicorp.com/vault](https://releases.hashicorp.com/vault), and installing in your PATH using your preferred method.
-
-> [!TIP]
-> **vmenu** requires **macOS 13 (Ventura) or later** through macOS 26 (Tahoe).
 
 ## Install
 
