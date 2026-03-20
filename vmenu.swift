@@ -25,7 +25,7 @@ private let logger = Logger(subsystem: "com.brianshumate.vmenu", category: "app"
 /// system keychain, so this client uses a custom `URLSessionDelegate` that
 /// loads the CA certificate from the path in `VAULT_CACERT` and evaluates
 /// server trust against it.
-class VaultHTTPClient: NSObject, URLSessionDelegate {
+final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
 
   /// The `URLSession` configured with this object as its delegate so that
   /// the custom TLS trust evaluation is used for every request.
@@ -161,7 +161,7 @@ class VaultHTTPClient: NSObject, URLSessionDelegate {
 /// `SMAppService.agent` and performs all operations that the App Sandbox
 /// forbids: `launchctl` process spawning, plist/log file I/O, and `vault`
 /// binary discovery.
-class XPCClient {
+final class XPCClient: @unchecked Sendable {
   static let shared = XPCClient()
 
   private var connection: NSXPCConnection?
@@ -188,12 +188,14 @@ class XPCClient {
       )
       conn.remoteObjectInterface = NSXPCInterface(with: VmenuHelperProtocol.self)
       conn.invalidationHandler = { [weak self] in
-        self?.connectionQueue.async {
+        guard let self else { return }
+        self.connectionQueue.async { [weak self] in
           self?.connection = nil
         }
       }
       conn.interruptionHandler = { [weak self] in
-        self?.connectionQueue.async {
+        guard let self else { return }
+        self.connectionQueue.async { [weak self] in
           self?.connection = nil
         }
       }
@@ -1862,7 +1864,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     XPCClient.shared.invalidate()
   }
 
-  private func ensureSingleInstance() -> Bool {
+  @MainActor private func ensureSingleInstance() -> Bool {
     guard let bundleID = Bundle.main.bundleIdentifier else { return true }
 
     let runningInstances = NSRunningApplication.runningApplications(
