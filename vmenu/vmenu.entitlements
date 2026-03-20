@@ -12,6 +12,9 @@
   - com.apple.security.app-sandbox:  ENABLED — full sandbox.
   - com.apple.security.network.client:  Outbound connections to the local
     Vault HTTPS endpoint (127.0.0.1:8200).
+  - com.apple.security.temporary-exception.mach-lookup.global-name:
+    Allow mach-lookup for the bundled helper service
+    (com.brianshumate.vmenu.helper).
   - Hardened Runtime protections remain active.
 -->
 <plist version="1.0">
@@ -20,6 +23,10 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>com.brianshumate.vmenu.helper</string>
+    </array>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <false/>
     <key>com.apple.security.cs.disable-library-validation</key>

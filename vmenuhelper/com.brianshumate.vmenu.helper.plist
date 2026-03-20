@@ -15,7 +15,7 @@
     <key>Label</key>
     <string>com.brianshumate.vmenu.helper</string>
     <key>BundleProgram</key>
-    <string>Contents/MacOS/com.brianshumate.vmenu.helper</string>
+    <string>MacOS/com.brianshumate.vmenu.helper</string>
     <key>MachServices</key>
     <dict>
         <key>com.brianshumate.vmenu.helper</key>
