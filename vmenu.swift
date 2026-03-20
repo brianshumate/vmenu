@@ -81,7 +81,11 @@ class VaultHTTPClient: NSObject, URLSessionDelegate {
             let status = VaultStatus(from: sealStatus, leader: leader)
             return (status.formatAsTable(), status)
         } catch {
-            return ("Failed to fetch Vault status: \(error.localizedDescription)", nil)
+            let msg = String(
+                localized: "Unable to reach the Vault server. Check that it is running and try again.\n\nDetails: \(error.localizedDescription)",
+                comment: "Error message when Vault HTTP API is unreachable"
+            )
+            return (msg, nil)
         }
     }
 
@@ -539,7 +543,7 @@ class VaultManager: ObservableObject {
             backing: .buffered,
             defer: false
         )
-        window.title = "About vmenu"
+        window.title = String(localized: "About vmenu", comment: "Title for the About window")
         window.minSize = NSSize(width: 280, height: 260)
         window.contentViewController = hostingController
         window.isReleasedWhenClosed = false
@@ -572,7 +576,7 @@ class VaultManager: ObservableObject {
             backing: .buffered,
             defer: false
         )
-        window.title = "Vault Server Status"
+        window.title = String(localized: "Vault Server Status", comment: "Title for the status detail window")
         window.minSize = NSSize(width: 400, height: 400)
 
         // Set the NSVisualEffectView as contentView *before* adding the
@@ -956,7 +960,7 @@ struct EnvCopyRowButton: View {
                                     : AnyShapeStyle(Color("CopyConfirmation")))
                             .accessibilityHidden(true)
                     } else {
-                        Text("Copy")
+                        Text("Copy", comment: "Button label to copy a value to the clipboard")
                             .font(.caption2)
                             .foregroundStyle(
                                 isHovered
@@ -998,6 +1002,9 @@ struct EnvCopyRowButton: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("\(label). Double-tap to copy.", comment: "VoiceOver label for an environment variable copy row"))
+        .accessibilityValue(isSensitive && !isRevealed ? Text("Hidden", comment: "VoiceOver value when a sensitive field is masked") : Text(value))
     }
 }
 
@@ -1029,6 +1036,8 @@ struct DottedLoadingIndicator: View {
                         .opacity(0.6)
                 }
             }
+            .accessibilityElement()
+            .accessibilityLabel(Text("Loading", comment: "VoiceOver label for the loading indicator"))
         } else {
             TimelineView(.periodic(from: .now, by: 0.18)) { timeline in
                 let tick = Int(timeline.date.timeIntervalSinceReferenceDate / 0.18)
@@ -1044,6 +1053,8 @@ struct DottedLoadingIndicator: View {
                 }
                 .animation(.easeInOut(duration: 0.16), value: activeIndex)
             }
+            .accessibilityElement()
+            .accessibilityLabel(Text("Loading", comment: "VoiceOver label for the loading indicator"))
         }
     }
 
@@ -1098,13 +1109,13 @@ struct VaultMenuView: View {
                     .symbolRenderingMode(.hierarchical)
                     .font(.largeTitle)
                     .foregroundStyle(Color(nsColor: .systemOrange))
-                    .accessibilityLabel("Warning")
+                    .accessibilityLabel(Text("Warning", comment: "Accessibility label for the warning icon"))
 
-                Text("Vault Not Installed")
+                Text("Vault Not Found", comment: "Heading when Vault is not installed")
                     .font(.headline)
                     .fontWeight(.bold)
 
-                Text("The vault binary was not found in your PATH.\nInstall it with Homebrew:")
+                Text("Vault was not found on this Mac.\nInstall it with Homebrew:", comment: "Explanation when Vault is not installed")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -1122,7 +1133,7 @@ struct VaultMenuView: View {
                                 : AnyShapeStyle(.regularMaterial))
                     )
 
-                Button("Download from HashiCorp") {
+                Button(String(localized: "Download from HashiCorp", comment: "Button to open Vault download page")) {
                     if let url = URL(
                         string:
                             "https://developer.hashicorp.com/vault/tutorials/getting-started/getting-started-install"
@@ -1139,7 +1150,11 @@ struct VaultMenuView: View {
                 .padding(.horizontal, 8)
 
             VStack(spacing: 2) {
-                menuButton(title: "Quit vmenu", icon: "xmark.circle.fill", shortcut: "⌘Q") {
+                menuButton(
+                    title: String(localized: "Quit vmenu", comment: "Menu button to quit the application"),
+                    icon: "xmark.circle.fill",
+                    shortcut: "⌘Q"
+                ) {
                     NSApplication.shared.terminate(nil)
                 }
             }
@@ -1159,7 +1174,7 @@ struct VaultMenuView: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Vault Dev Mode")
+                    Text("Vault Dev Mode", comment: "Header title for the Vault dev server section")
                         .font(.headline)
                         .foregroundStyle(.primary)
                 }
@@ -1187,7 +1202,7 @@ struct VaultMenuView: View {
                     if let status = vaultManager.parsedStatus {
                         if !vaultManager.vaultAddr.isEmpty {
                             detailRow(
-                                label: "Address",
+                                label: String(localized: "Address", comment: "Label for the Vault server network address"),
                                 value: vaultManager.vaultAddr,
                                 icon: "network"
                             )
@@ -1240,9 +1255,9 @@ struct VaultMenuView: View {
         }()
         let label: String = {
             switch displayState {
-            case .stopped: return "Stopped"
-            case .sealed: return "Sealed"
-            case .running: return "Running"
+            case .stopped: return String(localized: "Stopped", comment: "Vault server state label — not running")
+            case .sealed: return String(localized: "Sealed", comment: "Vault server state label — running but sealed")
+            case .running: return String(localized: "Running", comment: "Vault server state label — running and unsealed")
             }
         }()
         // Provide a distinct icon per state so that color is never the sole
@@ -1261,7 +1276,7 @@ struct VaultMenuView: View {
                 // Replace the plain dot with a shape-distinct icon so the state
                 // is unambiguous without relying on colour.
                 Image(systemName: stateIcon)
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .foregroundStyle(stateColor)
                     .accessibilityHidden(true)
             } else {
@@ -1299,6 +1314,8 @@ struct VaultMenuView: View {
                         )
                 )
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Vault status: \(label)", comment: "VoiceOver label for the server status badge"))
     }
 
     private func detailRow(label: String, value: String, icon: String) -> some View {
@@ -1350,7 +1367,9 @@ struct VaultMenuView: View {
                 .font(.caption2)
                 .symbolReplaceTransition()
                 .accessibilityHidden(true)
-            Text(sealed ? "Sealed" : "Unsealed")
+            Text(sealed
+                ? String(localized: "Sealed", comment: "Vault seal status — data is locked")
+                : String(localized: "Unsealed", comment: "Vault seal status — data is accessible"))
                 .font(.caption2)
                 .fontWeight(.medium)
         }
@@ -1363,12 +1382,17 @@ struct VaultMenuView: View {
                     ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.4))
                     : AnyShapeStyle(.ultraThinMaterial))
         )
+        .help(sealed
+            ? String(localized: "Vault is sealed — its data is encrypted and inaccessible until unsealed", comment: "Tooltip explaining sealed state")
+            : String(localized: "Vault is unsealed — its data is decrypted and ready for use", comment: "Tooltip explaining unsealed state"))
     }
 
     private var controlSection: some View {
         VStack(spacing: 2) {
             menuButton(
-                title: vaultManager.isRunning ? "Stop Server" : "Start Server",
+                title: vaultManager.isRunning
+                    ? String(localized: "Stop Server", comment: "Menu button to stop the Vault server")
+                    : String(localized: "Start Server", comment: "Menu button to start the Vault server"),
                 icon: vaultManager.isRunning ? "stop.fill" : "play.fill",
                 shortcut: "⌘S"
             ) {
@@ -1380,12 +1404,23 @@ struct VaultMenuView: View {
             }
             .disabled(!vaultManager.isVaultAvailable)
 
-            menuButton(title: "Restart Server", icon: "arrow.clockwise.circle.fill", shortcut: "⌘R") {
+            menuButton(
+                title: String(localized: "Restart Server", comment: "Menu button to restart the Vault server"),
+                icon: "arrow.clockwise.circle.fill",
+                shortcut: "⌘R"
+            ) {
                 vaultManager.restartVault()
             }
             .disabled(!vaultManager.isVaultAvailable || !vaultManager.isRunning)
 
-            menuButton(title: "Display Server Status", icon: "chart.bar.doc.horizontal.fill", shortcut: "⌘I") {
+            menuButton(
+                title: String(
+                    localized: "Display Server Status",
+                    comment: "Menu button to open the status window"
+                ),
+                icon: "chart.bar.doc.horizontal.fill",
+                shortcut: "⌘I"
+            ) {
                 vaultManager.fetchStatus()
             }
             .disabled(!vaultManager.isVaultAvailable || !vaultManager.isRunning)
@@ -1398,12 +1433,15 @@ struct VaultMenuView: View {
         VStack(spacing: 2) {
             if !vaultManager.vaultAddr.isEmpty {
                 envCopyRow(label: "VAULT_ADDR", value: vaultManager.vaultAddr)
+                    .help(String(localized: "The network address where Vault is listening", comment: "Tooltip for VAULT_ADDR"))
             }
             if !vaultManager.vaultCACert.isEmpty {
                 envCopyRow(label: "VAULT_CACERT", value: vaultManager.vaultCACert)
+                    .help(String(localized: "Path to the certificate authority file used for TLS verification", comment: "Tooltip for VAULT_CACERT"))
             }
             if !vaultManager.vaultToken.isEmpty {
                 envCopyRow(label: "VAULT_TOKEN", value: vaultManager.vaultToken, isSensitive: true)
+                    .help(String(localized: "The authentication token used to access Vault", comment: "Tooltip for VAULT_TOKEN"))
             }
         }
         .padding(.vertical, 4)
@@ -1425,10 +1463,14 @@ struct VaultMenuView: View {
 
     private var quitSection: some View {
         VStack(spacing: 2) {
-            menuButton(title: "About vmenu", icon: "info.circle.fill") {
+            menuButton(title: String(localized: "About vmenu", comment: "Menu button to open the About window"), icon: "info.circle.fill") {
                 VaultManager.shared.showAboutWindow()
             }
-            menuButton(title: "Quit vmenu", icon: "xmark.circle.fill", shortcut: "⌘Q") {
+            menuButton(
+                title: String(localized: "Quit vmenu", comment: "Menu button to quit the application"),
+                icon: "xmark.circle.fill",
+                shortcut: "⌘Q"
+            ) {
                 NSApplication.shared.terminate(nil)
             }
         }
@@ -1464,6 +1506,7 @@ struct AboutView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: appIconSize, height: appIconSize)
+                .accessibilityLabel(Text("vmenu app icon", comment: "Accessibility label for the application icon"))
 
             VStack(spacing: 4) {
                 Text("vmenu")
@@ -1476,7 +1519,7 @@ struct AboutView: View {
                 .foregroundStyle(.secondary)
             }
 
-            Text("A macOS menu bar app for Vault.")
+            Text("A macOS menu bar app for Vault.", comment: "Short app description in the About window")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -1492,13 +1535,14 @@ struct AboutView: View {
                     .foregroundStyle(.primary)
                     .tint(.blue)
 
-                Button("GitHub Repository") {
+                Button(String(localized: "GitHub Repository", comment: "Link to the project's GitHub page")) {
                     if let url = URL(string: "https://github.com/brianshumate/vmenu") {
                         NSWorkspace.shared.open(url)
                     }
                 }
                 .buttonStyle(.link)
                 .font(.caption)
+                .tint(.blue)
             }
 
         }
@@ -1663,11 +1707,14 @@ class MenuBarVisibilityMonitor {
         guard let center = Self.notificationCenter() else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = "vmenu Icon Hidden"
-        content.body =
-            "Your vmenu menu bar icon is currently hidden "
-            + "by macOS. Try closing other menu bar apps or "
-            + "rearranging icons to make it visible again."
+        content.title = String(localized: "vmenu Icon Hidden", comment: "Notification title when menu bar icon is obscured by other icons")
+        content.body = String(
+            localized: """
+                Your vmenu menu bar icon is currently hidden by macOS. \
+                Try closing other menu bar apps or rearranging icons to make it visible again.
+                """,
+            comment: "Notification body explaining how to recover a hidden menu bar icon"
+        )
         content.sound = .default
 
         let request = UNNotificationRequest(
@@ -1727,13 +1774,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if runningInstances.count > 1 {
             let alert = NSAlert()
-            alert.messageText = "vmenu is already running"
-            alert.informativeText =
-                "Another instance of vmenu is "
-                + "active in the menu bar. Only one instance "
-                + "can run at a time."
+            alert.messageText = String(localized: "vmenu is already running", comment: "Alert title when a second instance is launched")
+            alert.informativeText = String(
+                localized: "Another instance of vmenu is active in the menu bar. Only one instance can run at a time.",
+                comment: "Alert body explaining only one instance is allowed"
+            )
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: String(localized: "OK", comment: "Dismiss button for the duplicate-instance alert"))
             alert.runModal()
             NSApp.terminate(nil)
             return false
@@ -1753,11 +1800,25 @@ struct VmenuApp: App {
         return vaultManager.isSealed ? .sealed : .running
     }
 
+    /// Accessibility label for the menu bar icon so VoiceOver users can
+    /// identify the app and its current state without seeing the icon.
+    private var menuBarAccessibilityLabel: Text {
+        switch displayState {
+        case .stopped:
+            return Text("vmenu — Vault stopped", comment: "Menu bar icon accessibility label when Vault is stopped")
+        case .sealed:
+            return Text("vmenu — Vault sealed", comment: "Menu bar icon accessibility label when Vault is sealed")
+        case .running:
+            return Text("vmenu — Vault running", comment: "Menu bar icon accessibility label when Vault is running")
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra {
             VaultMenuView()
         } label: {
             Image(nsImage: makeVaultMenuBarImage(state: displayState))
+                .accessibilityLabel(menuBarAccessibilityLabel)
         }
         .menuBarExtraStyle(.window)
     }

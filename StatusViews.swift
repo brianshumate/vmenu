@@ -60,7 +60,7 @@ struct StatusPopoverView: View {
       }
 
       VStack(alignment: .leading, spacing: 3) {
-        Text("Vault Server Status")
+        Text("Vault Server Status", comment: "Heading in the status detail window")
           .font(.headline)
         HStack(spacing: 6) {
           Text("v\(status.version)")
@@ -93,7 +93,9 @@ struct StatusPopoverView: View {
   }
 
   private var sealStatusBadge: some View {
-    let label = isSealed ? "Sealed" : "Unsealed"
+    let label = isSealed
+      ? String(localized: "Sealed", comment: "Vault seal status badge — data is locked")
+      : String(localized: "Unsealed", comment: "Vault seal status badge — data is accessible")
     let icon = isSealed ? "lock.fill" : "lock.open.fill"
     // Use the tuned asset-catalog status colors so the badge communicates
     // seal state semantically and maintains contrast in both appearances.
@@ -120,35 +122,40 @@ struct StatusPopoverView: View {
             .strokeBorder(tint.opacity(0.25), lineWidth: 0.5)
         )
     )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(Text("Seal status: \(label)", comment: "VoiceOver label for the seal status badge"))
   }
 
   // MARK: - Server Information Card
 
   private var serverInfoCard: some View {
-    CardView(title: "Server", icon: "info.circle.fill") {
+    CardView(title: String(localized: "Server", comment: "Card title for server information"), icon: "info.circle.fill") {
       LazyVGrid(columns: [
         GridItem(.flexible(), spacing: 10),
         GridItem(.flexible(), spacing: 10)
       ], spacing: 10) {
         MetricTile(
-          label: "Version",
+          label: String(localized: "Version", comment: "Label for the Vault software version"),
           value: status.version,
           icon: "tag.fill"
         )
         MetricTile(
-          label: "Storage",
+          label: String(localized: "Storage", comment: "Label for the storage backend type"),
           value: status.storageType.capitalized,
-          icon: "internaldrive.fill"
+          icon: "internaldrive.fill",
+          help: String(localized: "The backend Vault uses to persist data", comment: "Tooltip for Storage metric")
         )
         MetricTile(
-          label: "Seal Type",
+          label: String(localized: "Seal Type", comment: "Label for the encryption seal type"),
           value: status.sealType.capitalized,
-          icon: "lock.shield.fill"
+          icon: "lock.shield.fill",
+          help: String(localized: "The encryption method Vault uses to protect its data", comment: "Tooltip for Seal Type metric")
         )
         MetricTile(
-          label: "HA Enabled",
+          label: String(localized: "HA Enabled", comment: "Label for high-availability clustering"),
           value: status.haEnabled.capitalized,
-          icon: "arrow.triangle.2.circlepath"
+          icon: "arrow.triangle.2.circlepath",
+          help: String(localized: "Whether high-availability clustering is enabled for failover support", comment: "Tooltip for HA Enabled metric")
         )
       }
     }
@@ -157,22 +164,25 @@ struct StatusPopoverView: View {
   // MARK: - Seal & Keys Card
 
   private var sealAndKeysCard: some View {
-    CardView(title: "Seal & Keys", icon: "key.fill") {
+    CardView(title: String(localized: "Seal & Keys", comment: "Card title for seal and key share information"), icon: "key.fill") {
       HStack(spacing: 10) {
         MetricTile(
-          label: "Initialized",
+          label: String(localized: "Initialized", comment: "Label for whether Vault has been initialized"),
           value: status.initialized.capitalized,
-          icon: "checkmark.seal.fill"
+          icon: "checkmark.seal.fill",
+          help: String(localized: "Whether Vault has completed its initial setup", comment: "Tooltip for Initialized metric")
         )
         MetricTile(
-          label: "Key Shares",
+          label: String(localized: "Key Shares", comment: "Label for the number of unseal key parts"),
           value: status.totalShares,
-          icon: "person.3.fill"
+          icon: "person.3.fill",
+          help: String(localized: "Number of parts the unseal key was split into", comment: "Tooltip for Key Shares metric")
         )
         MetricTile(
-          label: "Threshold",
+          label: String(localized: "Threshold", comment: "Label for the minimum key parts to unseal"),
           value: status.threshold,
-          icon: "number.square.fill"
+          icon: "number.square.fill",
+          help: String(localized: "Minimum number of key parts needed to unseal Vault", comment: "Tooltip for Threshold metric")
         )
       }
     }
@@ -181,11 +191,11 @@ struct StatusPopoverView: View {
   // MARK: - Cluster Card
 
   private var clusterCard: some View {
-    CardView(title: "Cluster", icon: "network") {
+    CardView(title: String(localized: "Cluster", comment: "Card title for cluster information"), icon: "network") {
       VStack(spacing: 0) {
         if status.clusterName != "-" {
           ClusterDetailRow(
-            label: "Name",
+            label: String(localized: "Name", comment: "Label for the cluster name"),
             value: status.clusterName,
             icon: "tag",
             isLast: status.clusterId == "-"
@@ -193,7 +203,7 @@ struct StatusPopoverView: View {
         }
         if status.clusterId != "-" {
           ClusterDetailRow(
-            label: "ID",
+            label: String(localized: "ID", comment: "Label for the cluster identifier"),
             value: status.clusterId,
             icon: "number",
             isMonospaced: true,
@@ -206,7 +216,7 @@ struct StatusPopoverView: View {
               .font(.caption)
               .foregroundStyle(.tertiary)
               .accessibilityHidden(true)
-            Text("No cluster details available")
+            Text("No cluster details available", comment: "Placeholder when no cluster info exists")
               .font(.caption)
               .foregroundStyle(.tertiary)
             Spacer()
@@ -220,7 +230,7 @@ struct StatusPopoverView: View {
   // MARK: - Unseal Key Card
 
   private var unsealKeyCard: some View {
-    CardView(title: "Unseal Key", icon: "key.horizontal.fill") {
+    CardView(title: String(localized: "Unseal Key", comment: "Card title for the unseal key section"), icon: "key.horizontal.fill") {
       HStack(spacing: 10) {
         Image(systemName: "key.fill")
           .font(.caption)
@@ -256,8 +266,12 @@ struct StatusPopoverView: View {
               .contentShape(Rectangle())
           }
           .buttonStyle(.borderless)
-          .help(showUnsealKey ? "Hide unseal key" : "Reveal unseal key")
-          .accessibilityLabel(showUnsealKey ? "Hide unseal key" : "Reveal unseal key")
+          .help(showUnsealKey
+            ? String(localized: "Hide unseal key", comment: "Tooltip for the hide unseal key button")
+            : String(localized: "Reveal unseal key", comment: "Tooltip for the reveal unseal key button"))
+          .accessibilityLabel(showUnsealKey
+            ? Text("Hide unseal key", comment: "Accessibility label for the hide unseal key button")
+            : Text("Reveal unseal key", comment: "Accessibility label for the reveal unseal key button"))
 
           Button {
             copyToClipboard(unsealKey, autoExpire: true)
@@ -270,8 +284,12 @@ struct StatusPopoverView: View {
               Image(systemName: unsealKeyCopied ? "checkmark.circle.fill" : "doc.on.clipboard")
                 .font(.caption2)
                 .symbolReplaceTransition()
-                .accessibilityLabel(unsealKeyCopied ? "Copied" : "Copy to clipboard")
-              Text(unsealKeyCopied ? "Copied" : "Copy")
+                .accessibilityLabel(unsealKeyCopied
+                  ? Text("Copied", comment: "Accessibility label after copying to clipboard")
+                  : Text("Copy to clipboard", comment: "Accessibility label for the copy button"))
+              Text(unsealKeyCopied
+                ? String(localized: "Copied", comment: "Button label after a value has been copied")
+                : String(localized: "Copy", comment: "Button label to copy a value to the clipboard"))
                 .font(.caption2)
                 .fontWeight(.medium)
             }
@@ -313,7 +331,7 @@ struct StatusPopoverView: View {
 
   private var rawOutputCard: some View {
     CardView(
-      title: "Raw Output",
+      title: String(localized: "Raw Output", comment: "Card title for the raw status output section"),
       icon: "terminal.fill",
       isCollapsible: true,
       isExpanded: $showRawOutput
@@ -328,7 +346,7 @@ struct StatusPopoverView: View {
               Image(systemName: "doc.on.clipboard")
                 .font(.caption2)
                 .accessibilityHidden(true)
-              Text("Copy")
+              Text("Copy", comment: "Button label to copy raw output to the clipboard")
                 .font(.caption2)
                 .fontWeight(.medium)
             }
@@ -502,6 +520,8 @@ private struct MetricTile: View {
   let label: String
   let value: String
   let icon: String
+  /// Optional tooltip explaining the metric for users unfamiliar with Vault terminology.
+  var help: String? = nil
 
   @ScaledMetric(relativeTo: .caption2) private var iconBoxSize: CGFloat = 28
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -557,6 +577,20 @@ private struct MetricTile: View {
             )
         )
     )
+    .applyHelp(help)
+  }
+}
+
+/// Conditionally applies `.help()` only when a non-nil tooltip string is
+/// provided, avoiding the empty-tooltip overhead on tiles that don't need one.
+extension View {
+  @ViewBuilder
+  fileprivate func applyHelp(_ text: String?) -> some View {
+    if let text {
+      self.help(text)
+    } else {
+      self
+    }
   }
 }
 
@@ -684,11 +718,11 @@ struct StatusErrorView: View {
           .symbolRenderingMode(.hierarchical)
           .font(.title)
           .foregroundStyle(Color(nsColor: .systemOrange))
-          .accessibilityLabel("Error")
+          .accessibilityLabel(Text("Error", comment: "Accessibility label for the error icon"))
       }
 
       VStack(spacing: 6) {
-        Text("Unable to Reach Vault")
+        Text("Unable to Reach Vault", comment: "Heading when the Vault server cannot be contacted")
           .font(.headline)
 
         Text(errorMessage)
@@ -702,7 +736,7 @@ struct StatusErrorView: View {
       Button {
         NSApp.keyWindow?.close()
       } label: {
-        Text("Dismiss")
+        Text("Dismiss", comment: "Button to close the error window")
           .font(.body)
           .fontWeight(.medium)
           .padding(.horizontal, 24)
