@@ -75,14 +75,14 @@ final class FormatAsTableTests: XCTestCase {
   }
 
   func testSingleFieldTable() {
-    let status = VaultStatus(version: "1.18.0")
+    let status = VaultStatus(version: "1.19.0")
     let table = status.formatAsTable()
     let lines = table.components(separatedBy: "\n")
 
     // Header + separator + 1 data row
     XCTAssertEqual(lines.count, 3)
     XCTAssertTrue(table.contains("Version"))
-    XCTAssertTrue(table.contains("1.18.0"))
+    XCTAssertTrue(table.contains("1.19.0"))
   }
 
   func testTableAlignmentConsistency() {

@@ -15,9 +15,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.brianshumate.vmenu.helper</string>
     <key>CFBundleVersion</key>
-    <string>1.18</string>
+    <string>1.19</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.18</string>
+    <string>1.19</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
 </dict>
