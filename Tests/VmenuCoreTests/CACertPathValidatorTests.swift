@@ -170,7 +170,9 @@ final class CACertPathValidatorTests: XCTestCase {
 
     let data = safeReadCACertData(url.path)
     XCTAssertNotNil(data)
-    XCTAssertEqual(String(data: data!, encoding: .utf8), content)
+    if let data = data {
+      XCTAssertEqual(String(data: data, encoding: .utf8), content)
+    }
   }
 
   func testSafeReadReturnsCorrectContent() {
@@ -239,7 +241,9 @@ final class CACertPathValidatorTests: XCTestCase {
 
     let data = safeReadCACertData(url.path)
     XCTAssertNotNil(data)
-    XCTAssertEqual(String(data: data!, encoding: .utf8), content)
+    if let data = data {
+      XCTAssertEqual(String(data: data, encoding: .utf8), content)
+    }
   }
 
   func testSafeReadAcceptsWorldReadableNotWritable() {
@@ -251,7 +255,9 @@ final class CACertPathValidatorTests: XCTestCase {
 
     let data = safeReadCACertData(url.path)
     XCTAssertNotNil(data)
-    XCTAssertEqual(String(data: data!, encoding: .utf8), content)
+    if let data = data {
+      XCTAssertEqual(String(data: data, encoding: .utf8), content)
+    }
   }
 
   func testSafeReadRejectsEmptyFile() {
