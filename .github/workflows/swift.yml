@@ -100,6 +100,88 @@ jobs:
           fi
           ./build-app.sh release sign
 
+      - name: Verify code signatures
+        run: |
+          echo "=== Verifying app bundle signature ==="
+          codesign --verify --deep --strict --verbose=2 vmenu.app
+
+          echo ""
+          echo "=== Helper binary details ==="
+          codesign -dv --verbose=2 vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1
+
+          echo ""
+          echo "=== Main app details ==="
+          codesign -dv --verbose=2 vmenu.app/Contents/MacOS/vmenu 2>&1
+
+          echo ""
+          echo "=== Checking identifiers ==="
+          HELPER_ID=$(codesign -dv vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep 'Identifier=' | cut -d= -f2)
+          MAIN_ID=$(codesign -dv vmenu.app/Contents/MacOS/vmenu 2>&1 | grep 'Identifier=' | cut -d= -f2)
+          echo "Helper identifier: $HELPER_ID"
+          echo "Main app identifier: $MAIN_ID"
+
+          # Verify identifiers are correct
+          if [ "$HELPER_ID" != "com.brianshumate.vmenu.helper" ]; then
+            echo "ERROR: Helper identifier mismatch! Expected 'com.brianshumate.vmenu.helper', got '$HELPER_ID'"
+            exit 1
+          fi
+          if [ "$MAIN_ID" != "com.brianshumate.vmenu" ]; then
+            echo "ERROR: Main app identifier mismatch! Expected 'com.brianshumate.vmenu', got '$MAIN_ID'"
+            exit 1
+          fi
+          echo "✓ All identifiers correct"
+
+          echo ""
+          echo "=== Checking entitlements ==="
+          echo "Helper entitlements:"
+          codesign -d --entitlements - vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | head -20
+
+          echo ""
+          echo "Main app entitlements:"
+          codesign -d --entitlements - vmenu.app/Contents/MacOS/vmenu 2>&1 | head -20
+
+          # Verify helper is NOT sandboxed (required for launchctl operations)
+          HELPER_SANDBOX=$(codesign -d --entitlements - vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep -c "app-sandbox.*true" || true)
+          if [ "$HELPER_SANDBOX" -gt 0 ]; then
+            echo "ERROR: Helper should not be sandboxed!"
+            exit 1
+          fi
+          echo "✓ Helper correctly not sandboxed"
+
+          # Verify main app IS sandboxed
+          MAIN_SANDBOX=$(codesign -d --entitlements - vmenu.app/Contents/MacOS/vmenu 2>&1 | grep -c "app-sandbox.*true" || true)
+          if [ "$MAIN_SANDBOX" -eq 0 ]; then
+            echo "ERROR: Main app should be sandboxed!"
+            exit 1
+          fi
+          echo "✓ Main app correctly sandboxed"
+
+          # Verify main app has mach-lookup entitlement for XPC communication
+          MACH_LOOKUP=$(codesign -d --entitlements - vmenu.app/Contents/MacOS/vmenu 2>&1 | grep -c "mach-lookup.global-name" || true)
+          if [ "$MACH_LOOKUP" -eq 0 ]; then
+            echo "ERROR: Main app missing mach-lookup entitlement for XPC!"
+            exit 1
+          fi
+          echo "✓ Main app has mach-lookup entitlement"
+
+          echo ""
+          echo "=== Checking launch constraints (required for macOS 26+) ==="
+          HELPER_CONSTRAINTS=$(codesign -dv --verbose=4 vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep -c "Has Parent Launch Constraints" || true)
+          if [ "$HELPER_CONSTRAINTS" -eq 0 ]; then
+            echo "ERROR: Helper missing parent launch constraints! Will fail on macOS 26."
+            exit 1
+          fi
+          echo "✓ Helper has parent launch constraints"
+
+          echo ""
+          echo "=== Checking Developer ID signature ==="
+          TEAM_ID=$(codesign -dv vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep 'TeamIdentifier=' | cut -d= -f2)
+          if [ "$TEAM_ID" = "not set" ] || [ -z "$TEAM_ID" ]; then
+            echo "ERROR: Helper not signed with Developer ID! Ad-hoc signed helpers fail on macOS 26."
+            exit 1
+          fi
+          echo "✓ Helper signed with Team ID: $TEAM_ID"
+
       - name: Create DMG
         run: |
           mkdir -p dist/dmg-staging

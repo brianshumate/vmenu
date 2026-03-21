@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Launch Constraint (Self) for vmenu helper
+
+  This constraint requires that the launching process has passed
+  basic validation (validation-category 1 = validated).
+
+  On macOS 26 (Tahoe), without explicit launch constraints, ad-hoc
+  signed helpers spawned by launchd fail with "Launch Constraint Violation".
+
+  Using validation-category: 1 means "the launching process must be validated"
+  which includes launchd (a system process).
+-->
+<plist version="1.0">
+<dict>
+    <key>validation-category</key>
+    <integer>1</integer>
+</dict>
+</plist>

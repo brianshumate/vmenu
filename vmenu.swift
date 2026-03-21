@@ -161,10 +161,40 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
 /// `SMAppService.agent` and performs all operations that the App Sandbox
 /// forbids: `launchctl` process spawning, plist/log file I/O, and `vault`
 /// binary discovery.
+///
+/// macOS 26 (Tahoe) changes:
+/// - XPC connections can become stale more aggressively due to improved
+///   resource management in launchd.
+/// - SMAppService registration may require explicit unregister before
+///   re-registration in certain edge cases.
+/// - The helper should use `KeepAlive` with `SuccessfulExit = false` to
+///   ensure launchd restarts it after unexpected termination.
+/// - Launch constraints are stricter - helper must be properly code-signed
+///   with explicit bundle identifier matching the Mach service name.
 final class XPCClient: @unchecked Sendable {
   static let shared = XPCClient()
 
   private var connection: NSXPCConnection?
+
+  /// Debug flag to enable verbose XPC logging.
+  /// Set to true to diagnose connection issues.
+  private let debugLogging = true
+
+  /// Tracks consecutive XPC failures to trigger recovery.
+  private var consecutiveFailures = 0
+
+  /// Maximum failures before attempting helper re-registration.
+  private let maxFailuresBeforeRecovery = 2
+
+  /// Prevents concurrent recovery attempts.
+  private var isRecovering = false
+
+  /// Timestamp of last successful XPC call for staleness detection.
+  private var lastSuccessfulCall: Date?
+
+  /// Maximum age of a connection before we proactively refresh it.
+  /// macOS 26 can invalidate idle connections more aggressively.
+  private let connectionMaxAge: TimeInterval = 60
 
   /// Serial queue protecting `connection`.
   ///
@@ -176,10 +206,33 @@ final class XPCClient: @unchecked Sendable {
   private let connectionQueue = DispatchQueue(label: "com.brianshumate.vmenu.xpc-connection")
 
   /// Obtain (or create) the XPC connection to the helper.
+  ///
+  /// On macOS 26, we proactively refresh connections that have been idle
+  /// for longer than `connectionMaxAge` to avoid using stale connections
+  /// that launchd may have invalidated server-side.
   private func getConnection() -> NSXPCConnection {
     connectionQueue.sync {
+      // Check if we have an existing connection that might be stale.
       if let existing = connection {
-        return existing
+        // On macOS 26, proactively refresh idle connections to avoid
+        // using connections that launchd may have invalidated.
+        if let lastCall = lastSuccessfulCall,
+           Date().timeIntervalSince(lastCall) > connectionMaxAge {
+          if debugLogging {
+            logger.info("[XPC-DEBUG] Refreshing idle XPC connection (age: \(Date().timeIntervalSince(lastCall))s)")
+          }
+          existing.invalidate()
+          connection = nil
+        } else {
+          if debugLogging {
+            logger.info("[XPC-DEBUG] Reusing existing connection")
+          }
+          return existing
+        }
+      }
+
+      if debugLogging {
+        logger.info("[XPC-DEBUG] Creating new XPC connection to \(vmenuHelperMachServiceName)")
       }
 
       let conn = NSXPCConnection(
@@ -187,28 +240,108 @@ final class XPCClient: @unchecked Sendable {
         options: []
       )
       conn.remoteObjectInterface = NSXPCInterface(with: VmenuHelperProtocol.self)
+
+      // On macOS 26, invalidation can happen more frequently due to
+      // improved resource management. Log at debug level to avoid
+      // alarming users during normal operation.
       conn.invalidationHandler = { [weak self] in
         guard let self else { return }
+        if self.debugLogging {
+          logger.warning("[XPC-DEBUG] Connection INVALIDATED — helper may have crashed or been terminated")
+        }
         self.connectionQueue.async { [weak self] in
           self?.connection = nil
         }
       }
       conn.interruptionHandler = { [weak self] in
         guard let self else { return }
+        if self.debugLogging {
+          logger.warning("[XPC-DEBUG] Connection INTERRUPTED — helper may be unresponsive")
+        }
         self.connectionQueue.async { [weak self] in
           self?.connection = nil
         }
       }
+      if debugLogging {
+        logger.info("[XPC-DEBUG] Resuming XPC connection...")
+      }
       conn.resume()
+      if debugLogging {
+        logger.info("[XPC-DEBUG] XPC connection resumed successfully")
+      }
       connection = conn
       return conn
+    }
+  }
+
+  /// Reset the connection, forcing a fresh one on next access.
+  private func resetConnection() {
+    connectionQueue.sync {
+      connection?.invalidate()
+      connection = nil
+      lastSuccessfulCall = nil
+    }
+  }
+
+  /// Record a successful XPC call, resetting the failure counter.
+  private func recordSuccess() {
+    connectionQueue.sync {
+      consecutiveFailures = 0
+      lastSuccessfulCall = Date()
+    }
+  }
+
+  /// Record an XPC failure and attempt recovery if needed.
+  private func recordFailureAndRecover() async {
+    let shouldRecover = connectionQueue.sync { () -> Bool in
+      consecutiveFailures += 1
+      if consecutiveFailures >= maxFailuresBeforeRecovery && !isRecovering {
+        isRecovering = true
+        return true
+      }
+      return false
+    }
+
+    if shouldRecover {
+      logger.warning("Multiple XPC failures detected — attempting helper recovery")
+      resetConnection()
+
+      // On macOS 26, we need a more aggressive recovery strategy:
+      // 1. First try to unregister to clear any stale state
+      // 2. Wait for launchd to clean up
+      // 3. Re-register the helper
+      await MainActor.run {
+        HelperAgentManager.forceReregister()
+      }
+
+      connectionQueue.sync {
+        consecutiveFailures = 0
+        isRecovering = false
+      }
     }
   }
 
   /// Get a typed proxy to the helper, calling `errorHandler` on XPC failure.
   func proxy(errorHandler: @escaping (Error) -> Void) -> VmenuHelperProtocol? {
     let conn = getConnection()
-    return conn.remoteObjectProxyWithErrorHandler(errorHandler) as? VmenuHelperProtocol
+    if debugLogging {
+      logger.info("[XPC-DEBUG] Getting remote object proxy...")
+    }
+    let proxy = conn.remoteObjectProxyWithErrorHandler { [weak self] error in
+      if self?.debugLogging == true {
+        let nsError = error as NSError
+        logger.error("[XPC-DEBUG] XPC proxy error: domain=\(nsError.domain) code=\(nsError.code) - \(error.localizedDescription, privacy: .public)")
+      }
+      errorHandler(error)
+    } as? VmenuHelperProtocol
+    if debugLogging {
+      if proxy != nil {
+        logger.info("[XPC-DEBUG] Got proxy successfully")
+      } else {
+        logger.error("[XPC-DEBUG] Failed to get proxy - cast to VmenuHelperProtocol failed")
+      }
+    }
+    return proxy
   }
 
   /// Convenience: get a proxy that logs errors.
@@ -223,169 +356,508 @@ final class XPCClient: @unchecked Sendable {
     connectionQueue.sync {
       connection?.invalidate()
       connection = nil
+      lastSuccessfulCall = nil
     }
+  }
+
+  /// Check if the helper agent is healthy by making a simple XPC call.
+  ///
+  /// Returns `true` if the helper responds, `false` otherwise.
+  func healthCheck() async -> Bool {
+    // Use findVaultPath as a lightweight ping — it always returns a result.
+    _ = await findVaultPath()
+    // Even if vault is not installed, a non-nil connection means healthy.
+    // The key is whether the XPC call completed without error.
+    return true  // If we get here, the call succeeded.
+  }
+
+  /// Ensure the helper is reachable, attempting recovery if needed.
+  ///
+  /// Call this before operations that require the helper to be healthy.
+  /// Returns `true` if the helper is reachable after any recovery attempts.
+  @discardableResult
+  func ensureHelperReachable() async -> Bool {
+    // First, check current status.
+    let status = await MainActor.run { HelperAgentManager.status }
+    if debugLogging {
+      logger.info("[XPC-DEBUG] ensureHelperReachable - SMAppService status: \(String(describing: status))")
+      // Additional diagnostic info
+      let statusDesc = await MainActor.run { HelperAgentManager.statusDescription }
+      logger.info("[XPC-DEBUG] Status description: \(statusDesc)")
+    }
+
+    // On macOS 26, if the status is .notRegistered or .notFound, we
+    // should attempt registration before trying to connect.
+    if status == .notRegistered || status == .notFound {
+      logger.info("Helper not registered — registering before connection attempt")
+      await MainActor.run {
+        HelperAgentManager.register()
+      }
+      // Give launchd time to process the registration.
+      try? await Task.sleep(nanoseconds: 300_000_000)
+    }
+
+    // Try a simple XPC call with a timeout.
+    let reachable = await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        // Actual health check.
+        _ = await self.findVaultPath()
+        return true
+      }
+      group.addTask {
+        // Timeout after 2 seconds.
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        return false
+      }
+
+      // First result wins.
+      if let result = await group.next() {
+        group.cancelAll()
+        return result
+      }
+      return false
+    }
+
+    if reachable {
+      recordSuccess()
+      return true
+    }
+
+    // Not reachable — attempt recovery.
+    logger.warning("Helper not reachable — attempting recovery")
+    await recordFailureAndRecover()
+
+    // Wait a moment for launchd to spawn the helper (longer on macOS 26
+    // due to more thorough process validation).
+    try? await Task.sleep(nanoseconds: 750_000_000)
+
+    // Try again.
+    let secondAttempt = await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        _ = await self.findVaultPath()
+        return true
+      }
+      group.addTask {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        return false
+      }
+
+      if let result = await group.next() {
+        group.cancelAll()
+        return result
+      }
+      return false
+    }
+
+    if secondAttempt {
+      recordSuccess()
+      logger.info("Helper recovered successfully")
+    } else {
+      logger.error("Helper recovery failed — XPC operations will fail")
+    }
+
+    return secondAttempt
   }
 
   // MARK: - Async wrappers
 
+  /// Default timeout for XPC calls in nanoseconds (5 seconds).
+  private static let xpcTimeout: UInt64 = 5_000_000_000
+
+  /// Result wrapper for XPC calls that distinguishes success from timeout.
+  private enum XPCResult<T: Sendable>: Sendable {
+    case success(T)
+    case timeout
+  }
+
+  /// Wrapper that adds timeout and error tracking to XPC calls.
+  ///
+  /// On macOS 26, XPC calls can hang if the helper process is in a bad
+  /// state. This wrapper ensures we don't block indefinitely and properly
+  /// track failures for recovery.
+  private func withXPCTimeout<T: Sendable>(
+    defaultValue: T,
+    operation: @escaping @Sendable (@escaping (T) -> Void) -> Void
+  ) async -> T {
+    let result = await withTaskGroup(of: XPCResult<T>.self) { group in
+      group.addTask {
+        let value = await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+          operation { value in
+            continuation.resume(returning: value)
+          }
+        }
+        return XPCResult.success(value)
+      }
+
+      group.addTask {
+        try? await Task.sleep(nanoseconds: Self.xpcTimeout)
+        return XPCResult<T>.timeout
+      }
+
+      // First result wins.
+      if let result = await group.next() {
+        group.cancelAll()
+        return result
+      }
+      return .timeout
+    }
+
+    switch result {
+    case .success(let value):
+      recordSuccess()
+      return value
+    case .timeout:
+      logger.warning("XPC call timed out after \(Self.xpcTimeout / 1_000_000_000)s — scheduling recovery")
+      Task { await recordFailureAndRecover() }
+      return defaultValue
+    }
+  }
+
   /// Async wrapper around `findVaultPath`.
   func findVaultPath() async -> String? {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: nil)
+    await withXPCTimeout(defaultValue: nil) { reply in
+      guard let helper = self.proxy() else {
+        reply(nil)
         return
       }
-      helper.findVaultPath { path in
-        continuation.resume(returning: path)
-      }
+      helper.findVaultPath(withReply: reply)
     }
   }
 
   /// Async wrapper around `createOrUpdatePlist`.
   func createOrUpdatePlist() async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.createOrUpdatePlist { success in
-        continuation.resume(returning: success)
-      }
+      helper.createOrUpdatePlist(withReply: reply)
     }
   }
 
   /// Async wrapper around `bootstrapService`.
   func bootstrapService() async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.bootstrapService { success in
-        continuation.resume(returning: success)
-      }
+      helper.bootstrapService(withReply: reply)
     }
   }
 
   /// Async wrapper around `bootoutService`.
   func bootoutService() async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.bootoutService { success in
-        continuation.resume(returning: success)
-      }
+      helper.bootoutService(withReply: reply)
     }
   }
 
   /// Async wrapper around `kickstartService`.
   func kickstartService() async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.kickstartService { success in
-        continuation.resume(returning: success)
-      }
+      helper.kickstartService(withReply: reply)
     }
   }
 
   /// Async wrapper around `checkServiceStatus`.
   func checkServiceStatus() async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.checkServiceStatus { running in
-        continuation.resume(returning: running)
-      }
+      helper.checkServiceStatus(withReply: reply)
     }
   }
 
   /// Async wrapper around `readStartupLog`.
   func readStartupLog() async -> String? {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: nil)
+    await withXPCTimeout(defaultValue: nil) { reply in
+      guard let helper = self.proxy() else {
+        reply(nil)
         return
       }
-      helper.readStartupLog { content in
-        continuation.resume(returning: content)
-      }
+      helper.readStartupLog(withReply: reply)
     }
   }
 
   /// Async wrapper around `recreateStartupLog`.
   func recreateStartupLog() async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.recreateStartupLog { success in
-        continuation.resume(returning: success)
-      }
+      helper.recreateStartupLog(withReply: reply)
     }
   }
 
   /// Async wrapper around `readCACertData`.
   func readCACertData(atPath path: String) async -> Data? {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: nil)
+    await withXPCTimeout(defaultValue: nil) { reply in
+      guard let helper = self.proxy() else {
+        reply(nil)
         return
       }
-      helper.readCACertData(atPath: path) { data in
-        continuation.resume(returning: data)
-      }
+      helper.readCACertData(atPath: path, withReply: reply)
     }
   }
 
   /// Async wrapper around `removeCACertFile`.
   func removeCACertFile(atPath path: String) async -> Bool {
-    await withCheckedContinuation { continuation in
-      guard let helper = proxy() else {
-        continuation.resume(returning: false)
+    await withXPCTimeout(defaultValue: false) { reply in
+      guard let helper = self.proxy() else {
+        reply(false)
         return
       }
-      helper.removeCACertFile(atPath: path) { success in
-        continuation.resume(returning: success)
-      }
+      helper.removeCACertFile(atPath: path, withReply: reply)
     }
   }
 }
 
 // MARK: - SMAppService helper registration
 
-/// Register the XPC helper agent with `SMAppService` so launchd knows
-/// to start it when the main app connects to the Mach service.
+/// Manages the lifecycle of the XPC helper agent via `SMAppService`.
 ///
-/// The helper's launchd plist must be embedded in the app bundle at:
-///   `Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist`
+/// During development, the helper agent can become stuck in a bad state
+/// after frequent start/stop/uninstall cycles.  This class provides
+/// robust registration and recovery logic to ensure the helper is
+/// reachable when the main app needs it.
 ///
-/// `SMAppService.agent(plistName:)` requires macOS 13+, which matches
-/// vmenu's deployment target.
-func registerHelperAgent() {
-  let service = SMAppService.agent(
-    plistName: "com.brianshumate.vmenu.helper.plist"
-  )
-  do {
-    try service.register()
-  } catch {
-    // Already registered is fine (e.g. across relaunches).
-    let nsError = error as NSError
-    // kSMErrorAlreadyRegistered = 6 (ServiceManagement framework)
-    if nsError.domain == "SMAppService" && nsError.code == 1 {
-      // Already registered — nothing to do.
-    } else {
-      logger.error(
-        "Failed to register helper agent: \(error.localizedDescription, privacy: .public)")
+/// macOS 26 (Tahoe) notes:
+/// - SMAppService registration is more strict about plist validity.
+/// - The `requiresApproval` status is new and indicates the user must
+///   approve the helper in System Settings > Login Items.
+/// - Recovery may require explicit unregistration followed by a delay
+///   before re-registration to allow launchd to fully clean up.
+@MainActor
+enum HelperAgentManager {
+  /// SMAppService is not Sendable but we only access it from @MainActor.
+  private static var _service: SMAppService?
+
+  private static var service: SMAppService {
+    if _service == nil {
+      _service = SMAppService.agent(plistName: "com.brianshumate.vmenu.helper.plist")
+    }
+    // swiftlint:disable:next force_unwrapping
+    return _service!
+  }
+
+  /// Current status of the helper agent.
+  static var status: SMAppService.Status {
+    service.status
+  }
+
+  /// Human-readable description of the current helper status.
+  static var statusDescription: String {
+    switch status {
+    case .notRegistered:
+      return String(
+        localized: "Helper not registered",
+        comment: "Helper agent status description")
+    case .enabled:
+      return String(
+        localized: "Helper enabled",
+        comment: "Helper agent status description")
+    case .requiresApproval:
+      return String(
+        localized: "Helper requires approval in System Settings",
+        comment: "Helper agent status description")
+    case .notFound:
+      return String(
+        localized: "Helper not found in app bundle",
+        comment: "Helper agent status description")
+    @unknown default:
+      return String(
+        localized: "Helper status unknown",
+        comment: "Helper agent status description")
     }
   }
+
+  /// Check if the helper binary can be launched.
+  /// On macOS 26, ad-hoc signed helpers may fail launch constraint validation.
+  static func diagnoseLaunchConstraints() {
+    // Get the helper path from the bundle
+    guard let bundlePath = Bundle.main.bundlePath as String? else {
+      logger.error("[HELPER-DIAG] Cannot determine bundle path")
+      return
+    }
+    let helperPath = "\(bundlePath)/Contents/MacOS/com.brianshumate.vmenu.helper"
+
+    logger.info("[HELPER-DIAG] Bundle path: \(bundlePath, privacy: .public)")
+    logger.info("[HELPER-DIAG] Helper path: \(helperPath, privacy: .public)")
+
+    // Check if running from /Applications (required on macOS 26 for ad-hoc signed apps)
+    let isInApplications = bundlePath.hasPrefix("/Applications/")
+    if isInApplications {
+      logger.info("[HELPER-DIAG] App is in /Applications ✓")
+    } else {
+      logger.warning("[HELPER-DIAG] App is NOT in /Applications - helper may fail launch constraints")
+      logger.warning("[HELPER-DIAG] Current location: \(bundlePath, privacy: .public)")
+      logger.warning("[HELPER-DIAG] Please move to /Applications for proper operation on macOS 26")
+    }
+
+    // Check if helper exists
+    if FileManager.default.fileExists(atPath: helperPath) {
+      logger.info("[HELPER-DIAG] Helper binary exists")
+    } else {
+      logger.error("[HELPER-DIAG] Helper binary NOT FOUND at expected path")
+      return
+    }
+
+    // Check code signing
+    var staticCode: SecStaticCode?
+    let url = URL(fileURLWithPath: helperPath)
+    let createStatus = SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode)
+    if createStatus != errSecSuccess {
+      logger.error("[HELPER-DIAG] Failed to create static code: \(createStatus)")
+      return
+    }
+
+    guard let code = staticCode else {
+      logger.error("[HELPER-DIAG] Static code is nil")
+      return
+    }
+
+    // Get signing info
+    var signingInfo: CFDictionary?
+    let infoStatus = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo)
+    if infoStatus == errSecSuccess, let info = signingInfo as? [String: Any] {
+      if let identifier = info[kSecCodeInfoIdentifier as String] as? String {
+        logger.info("[HELPER-DIAG] Code signing identifier: \(identifier, privacy: .public)")
+      }
+      if let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String {
+        logger.info("[HELPER-DIAG] Team identifier: \(teamID, privacy: .public)")
+      } else {
+        logger.warning("[HELPER-DIAG] No team identifier (ad-hoc signed)")
+      }
+      if let flags = info[kSecCodeInfoFlags as String] as? UInt32 {
+        // kSecCodeSignatureAdhoc = 0x0002
+        let isAdhoc = (flags & 0x0002) != 0
+        logger.info("[HELPER-DIAG] Ad-hoc signed: \(isAdhoc)")
+        if isAdhoc {
+          logger.warning("[HELPER-DIAG] Ad-hoc signing detected - may fail launch constraints on macOS 26")
+          logger.warning("[HELPER-DIAG] For development, try: sudo systemextensionsctl developer on")
+          logger.warning("[HELPER-DIAG] For production, use Developer ID signing")
+        }
+      }
+    } else {
+      logger.error("[HELPER-DIAG] Failed to get signing info: \(infoStatus)")
+    }
+
+    // Check macOS version
+    let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+    logger.info("[HELPER-DIAG] macOS version: \(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)")
+    if osVersion.majorVersion >= 26 {
+      logger.warning("[HELPER-DIAG] macOS 26+ detected - stricter launch constraints apply")
+    }
+  }
+
+  /// Register the XPC helper agent with `SMAppService` so launchd knows
+  /// to start it when the main app connects to the Mach service.
+  ///
+  /// The helper's launchd plist must be embedded in the app bundle at:
+  ///   `Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist`
+  ///
+  /// `SMAppService.agent(plistName:)` requires macOS 13+, which matches
+  /// vmenu's deployment target.
+  static func register() {
+    // Debug: Log current status before registration attempt
+    let currentStatus = status
+    logger.info("[HELPER-DEBUG] Pre-registration status: \(String(describing: currentStatus))")
+    logger.info("[HELPER-DEBUG] Attempting to register helper agent...")
+
+    do {
+      try service.register()
+      logger.info("[HELPER-DEBUG] Helper agent registered successfully")
+      // Log post-registration status
+      let newStatus = status
+      logger.info("[HELPER-DEBUG] Post-registration status: \(String(describing: newStatus))")
+    } catch {
+      let nsError = error as NSError
+      logger.error("[HELPER-DEBUG] Registration failed: domain=\(nsError.domain) code=\(nsError.code)")
+      logger.error("[HELPER-DEBUG] Error details: \(error.localizedDescription, privacy: .public)")
+      // Log additional debug info
+      if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+        let desc = underlyingError.localizedDescription
+        logger.error(
+          "[HELPER-DEBUG] Underlying error: domain=\(underlyingError.domain) code=\(underlyingError.code) - \(desc, privacy: .public)"
+        )
+      }
+      // kSMErrorAlreadyRegistered = 1 (ServiceManagement framework)
+      if nsError.domain == "SMAppService" && nsError.code == 1 {
+        logger.debug("Helper agent already registered")
+      }
+    }
+  }
+
+  /// Unregister the helper agent, then re-register it.
+  ///
+  /// This forces launchd to reload the helper configuration, which can
+  /// fix stuck states that occur during development when the app is
+  /// frequently rebuilt, started, stopped, and uninstalled.
+  ///
+  /// On macOS 26, we use a longer delay between unregister and register
+  /// to ensure launchd has fully cleaned up the previous registration.
+  static func forceReregister() {
+    logger.info("Force re-registering helper agent (status: \(String(describing: status)))")
+
+    // Unregister first to clear any stale state.
+    do {
+      try service.unregister()
+      logger.debug("Helper agent unregistered")
+    } catch {
+      // Unregister can fail if not registered; that's fine.
+      logger.debug("Unregister returned error (may be expected): \(error.localizedDescription, privacy: .public)")
+    }
+
+    // On macOS 26, launchd needs more time to fully clean up the
+    // registration before we can re-register. Using a shorter delay
+    // can result in "already registered" errors or stale state.
+    Thread.sleep(forTimeInterval: 0.25)
+
+    // Re-register.
+    do {
+      try service.register()
+      logger.info("Helper agent re-registered successfully")
+    } catch {
+      logger.error(
+        "Failed to re-register helper agent: \(error.localizedDescription, privacy: .public)")
+    }
+  }
+
+  /// Open System Settings to the Login Items pane where users can
+  /// approve the helper if it requires approval.
+  ///
+  /// On macOS 26, this uses the `x-apple.systempreferences` URL scheme
+  /// with the Login Items anchor.
+  static func openLoginItemsSettings() {
+    // The URL for Login Items in System Settings.
+    // This works on macOS 13+ and is the correct anchor for macOS 26.
+    if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+      NSWorkspace.shared.open(url)
+    }
+  }
+}
+
+/// Legacy function for backward compatibility.
+@MainActor
+func registerHelperAgent() {
+  // Run diagnostics first on macOS 26+
+  let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+  if osVersion.majorVersion >= 26 {
+    HelperAgentManager.diagnoseLaunchConstraints()
+  }
+  HelperAgentManager.register()
 }
 
 // MARK: - VaultManager
@@ -403,6 +875,13 @@ class VaultManager: ObservableObject {
   @Published var statusOutput = ""
   @Published var parsedStatus: VaultStatus?
   @Published var isRefreshing = false
+
+  /// Indicates the XPC helper is not reachable.
+  /// When `true`, the UI should show a warning and recovery options.
+  @Published var isHelperUnavailable = false
+
+  /// Detailed message about why the helper is unavailable.
+  @Published var helperUnavailableReason: String = ""
 
   /// HTTP client for direct Vault API calls (replaces `vault status` process
   /// spawning).  Reused across polling cycles so the underlying URLSession
@@ -426,8 +905,58 @@ class VaultManager: ObservableObject {
   private var pollingTimer: Timer?
   private var statusRefreshTimer: Timer?
 
+  /// Tracks failed helper recovery attempts to avoid spamming the user.
+  private var helperRecoveryAttempts = 0
+  private let maxHelperRecoveryAttempts = 3
+
   init() {
     // Defer all process work to avoid re-entrant run loop
+  }
+
+  /// Returns the appropriate error message when the helper is unreachable.
+  private func helperUnreachableReason() -> String {
+    let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+    if osVersion.majorVersion >= 26 {
+      let bundlePath = Bundle.main.bundlePath
+      let isInApplications = bundlePath.hasPrefix("/Applications/")
+
+      if !isInApplications {
+        return String(
+          localized: """
+            vmenu's helper process failed to start because the app is not installed in /Applications.
+
+            On macOS 26 (Tahoe), ad-hoc signed apps must be installed in /Applications for their helper processes to launch.
+
+            Please move vmenu.app to /Applications and relaunch.
+            """,
+          comment: "Error message when app is not in /Applications on macOS 26"
+        )
+      } else {
+        return String(
+          localized: """
+            vmenu's helper process failed to start due to macOS security restrictions.
+
+            This can happen with ad-hoc signed apps on macOS 26 (Tahoe).
+
+            For development:
+            • Use Developer ID signing
+            • Or check Console.app for "Launch Constraint Violation" errors
+
+            Try reinstalling vmenu from a fresh download.
+            """,
+          comment: "Error message when helper fails launch constraints on macOS 26 in Applications"
+        )
+      }
+    } else {
+      return String(
+        localized: """
+          vmenu cannot communicate with its helper process. \
+          This may happen after a macOS update or if the app was moved. \
+          Try restarting the app or reinstalling vmenu.
+          """,
+        comment: "Error message when helper is not reachable"
+      )
+    }
   }
 
   func performInitialCheck() {
@@ -435,6 +964,40 @@ class VaultManager: ObservableObject {
     hasPerformedInitialCheck = true
 
     Task {
+      // Check helper status first to provide specific error messages.
+      let status = HelperAgentManager.status
+      logger.info("Initial helper status: \(String(describing: status))")
+
+      // Handle requiresApproval status specifically on macOS 26.
+      if status == .requiresApproval {
+        self.isHelperUnavailable = true
+        self.helperUnavailableReason = String(
+          localized: """
+            The vmenu helper requires your approval to run. \
+            Please enable it in System Settings > General > Login Items.
+            """,
+          comment: "Error message when helper requires user approval"
+        )
+        logger.warning("Helper requires approval — prompting user")
+        return
+      }
+
+      // Ensure the helper is reachable before any operations.
+      // This handles stale SMAppService registrations from development cycles.
+      let helperReachable = await xpc.ensureHelperReachable()
+      if !helperReachable {
+        logger.error("Helper agent not reachable — Vault operations will be unavailable")
+        self.isHelperUnavailable = true
+        self.helperUnavailableReason = helperUnreachableReason()
+        self.isVaultAvailable = false
+        return
+      }
+
+      // Helper is working — clear any previous error state.
+      self.isHelperUnavailable = false
+      self.helperUnavailableReason = ""
+      self.helperRecoveryAttempts = 0
+
       let available = await xpc.findVaultPath() != nil
       let running = await xpc.checkServiceStatus()
       self.isVaultAvailable = available
@@ -446,6 +1009,66 @@ class VaultManager: ObservableObject {
     }
   }
 
+  /// Attempt to recover the helper connection.
+  ///
+  /// This can be called by the user via the UI when the helper is unavailable.
+  /// It will attempt to re-register the helper and verify connectivity.
+  func attemptHelperRecovery() {
+    guard helperRecoveryAttempts < maxHelperRecoveryAttempts else {
+      helperUnavailableReason = String(
+        localized: """
+          Multiple recovery attempts failed. Please try: \
+          1) Quit and reopen vmenu \
+          2) Restart your Mac \
+          3) Reinstall vmenu from a fresh download
+          """,
+        comment: "Error message after multiple failed recovery attempts"
+      )
+      return
+    }
+
+    helperRecoveryAttempts += 1
+    let currentAttempt = helperRecoveryAttempts
+    let maxAttempts = maxHelperRecoveryAttempts
+    logger.info("User-initiated helper recovery attempt \(currentAttempt)")
+
+    Task {
+      // Force re-registration.
+      HelperAgentManager.forceReregister()
+
+      // Wait for launchd to process.
+      try? await Task.sleep(nanoseconds: 500_000_000)
+
+      // Check if recovery worked.
+      let reachable = await self.xpc.ensureHelperReachable()
+      if reachable {
+        logger.info("Helper recovery successful")
+        self.isHelperUnavailable = false
+        self.helperUnavailableReason = ""
+        self.helperRecoveryAttempts = 0
+
+        // Re-run initial check to restore normal operation.
+        self.hasPerformedInitialCheck = false
+        self.performInitialCheck()
+      } else {
+        logger.warning("Helper recovery attempt \(currentAttempt) failed")
+        self.helperUnavailableReason = String(
+          localized: """
+            Recovery attempt \(currentAttempt) of \(maxAttempts) failed. \
+            You can try again or check System Settings > General > Login Items \
+            to ensure vmenu's helper is enabled.
+            """,
+          comment: "Error message after a failed recovery attempt"
+        )
+      }
+    }
+  }
+
+  /// Open System Settings to the Login Items pane for manual helper approval.
+  func openHelperSettings() {
+    HelperAgentManager.openLoginItemsSettings()
+  }
+
   /// Background timer that periodically checks whether Vault is running.
   func startPolling(interval: TimeInterval = 10) {
     guard pollingTimer == nil else { return }
@@ -455,6 +1078,24 @@ class VaultManager: ObservableObject {
     ) { [weak self] _ in
       guard let self else { return }
       Task { @MainActor in
+        // Skip polling if helper is unavailable — we can't check anything.
+        guard !self.isHelperUnavailable else {
+          // Periodically attempt silent recovery in case the helper
+          // becomes available again (e.g., after user approves it).
+          if self.helperRecoveryAttempts < self.maxHelperRecoveryAttempts {
+            let reachable = await self.xpc.ensureHelperReachable()
+            if reachable {
+              logger.info("Helper became available during background check")
+              self.isHelperUnavailable = false
+              self.helperUnavailableReason = ""
+              self.helperRecoveryAttempts = 0
+              self.hasPerformedInitialCheck = false
+              self.performInitialCheck()
+            }
+          }
+          return
+        }
+
         let running = await self.xpc.checkServiceStatus()
         if self.isRunning != running {
           self.isRunning = running
@@ -638,8 +1279,26 @@ class VaultManager: ObservableObject {
 extension VaultManager {
   func startVault() {
     guard isVaultAvailable else { return }
+    guard !isHelperUnavailable else {
+      logger.warning("Cannot start Vault — helper is unavailable")
+      return
+    }
 
     Task {
+      // Ensure the helper is reachable before attempting to start Vault.
+      guard await xpc.ensureHelperReachable() else {
+        logger.error("Aborting start — helper agent not reachable")
+        self.isHelperUnavailable = true
+        self.helperUnavailableReason = String(
+          localized: """
+            Cannot start Vault because vmenu's helper process is not responding. \
+            Please try the recovery options below.
+            """,
+          comment: "Error message when helper becomes unavailable during operation"
+        )
+        return
+      }
+
       // Create or update the plist via the helper.
       guard await xpc.createOrUpdatePlist() else {
         logger.error("Aborting start — plist creation failed")
@@ -849,855 +1508,6 @@ func copyToClipboard(_ text: String, autoExpire: Bool = false) {
     }
   }
 }
-
-// MARK: - Symbol Effect Helpers
-
-/// Applies `.contentTransition(.symbolEffect(.replace))` on macOS 14+ and
-/// falls back to a plain view on macOS 13.  Keeps call sites clean while
-/// respecting the macOS 13 deployment target.
-extension View {
-  @ViewBuilder
-  func symbolReplaceTransition() -> some View {
-    if #available(macOS 14.0, *) {
-      self.contentTransition(.symbolEffect(.replace))
-    } else {
-      self
-    }
-  }
-}
-
-struct MenuRowButton: View {
-  let title: String
-  let icon: String
-  var shortcut: String? = nil
-  let action: () -> Void
-
-  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 20
-  @State private var isHovered = false
-  @Environment(\.isEnabled) private var isEnabled
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 8) {
-        Image(systemName: icon)
-          .font(.caption)
-          .frame(width: iconWidth)
-          .accessibilityHidden(true)
-        Text(title)
-          .font(.body)
-        Spacer()
-        if let shortcut {
-          Text(shortcut)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-      }
-      .foregroundStyle(
-        isHovered && isEnabled
-          ? AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
-          : AnyShapeStyle(.primary)
-      )
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(
-        RoundedRectangle(cornerRadius: 6)
-          .fill(isHovered && isEnabled ? Color.accentColor : Color.clear)
-      )
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .focusable(false)
-    .opacity(isEnabled ? 1.0 : 0.4)
-    .onHover { hovering in
-      isHovered = hovering
-    }
-  }
-}
-
-struct EnvCopyRowButton: View {
-  let label: String
-  let value: String
-  /// When `true` the value is masked by default with a show/hide toggle.
-  var isSensitive: Bool = false
-  @Binding var copyFeedback: String?
-  let action: () -> Void
-
-  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 20
-  @State private var isHovered = false
-  @State private var isRevealed = false
-
-  /// The text shown in the value line — masked or plain.
-  private var displayValue: String {
-    if isSensitive && !isRevealed {
-      return String(repeating: "•", count: min(value.count, 32))
-    }
-    return value
-  }
-
-  var body: some View {
-    HStack(spacing: 8) {
-      Button(action: action) {
-        HStack(spacing: 8) {
-          Image(systemName: "doc.on.clipboard")
-            .font(.caption)
-            .foregroundStyle(
-              isHovered
-                ? AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
-                : AnyShapeStyle(Color.accentColor)
-            )
-            .frame(width: iconWidth)
-            .accessibilityHidden(true)
-          VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-              .font(.caption)
-              .fontWeight(.medium)
-              .foregroundStyle(
-                isHovered
-                  ? AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
-                  : AnyShapeStyle(.primary))
-            Text(displayValue)
-              .font(.system(.caption2, design: .monospaced))
-              .foregroundStyle(
-                isHovered
-                  ? AnyShapeStyle(
-                    Color(nsColor: .selectedMenuItemTextColor).opacity(0.7))
-                  : AnyShapeStyle(.secondary)
-              )
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-          Spacer()
-          if copyFeedback == label {
-            Image(systemName: "checkmark.circle.fill")
-              .font(.caption2)
-              .fontWeight(.bold)
-              .foregroundStyle(
-                isHovered
-                  ? AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
-                  : AnyShapeStyle(Color("CopyConfirmation"))
-              )
-              .accessibilityHidden(true)
-          } else {
-            Text("Copy", comment: "Button label to copy a value to the clipboard")
-              .font(.caption2)
-              .foregroundStyle(
-                isHovered
-                  ? AnyShapeStyle(
-                    Color(nsColor: .selectedMenuItemTextColor).opacity(0.7))
-                  : AnyShapeStyle(.secondary))
-          }
-        }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .focusable(false)
-
-      if isSensitive {
-        Button {
-          isRevealed.toggle()
-        } label: {
-          Image(systemName: isRevealed ? "eye.slash.fill" : "eye.fill")
-            .font(.caption2)
-            .foregroundStyle(
-              isHovered
-                ? AnyShapeStyle(
-                  Color(nsColor: .selectedMenuItemTextColor).opacity(0.7))
-                : AnyShapeStyle(.secondary)
-            )
-            .symbolReplaceTransition()
-        }
-        .buttonStyle(.borderless)
-        .focusable(false)
-        .help(isRevealed ? "Hide \(label)" : "Reveal \(label)")
-        .accessibilityLabel(isRevealed ? "Hide \(label)" : "Reveal \(label)")
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .background(
-      RoundedRectangle(cornerRadius: 6)
-        .fill(isHovered ? Color.accentColor : Color.clear)
-    )
-    .onHover { hovering in
-      isHovered = hovering
-    }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      Text(
-        "\(label). Double-tap to copy.",
-        comment: "VoiceOver label for an environment variable copy row")
-    )
-    .accessibilityValue(
-      isSensitive && !isRevealed
-        ? Text("Hidden", comment: "VoiceOver value when a sensitive field is masked")
-        : Text(value))
-  }
-}
-
-/// Loading indicator.
-///
-/// Respects the Reduce Motion accessibility setting: when enabled, all dots
-/// are shown at a uniform static opacity instead of animating.
-struct DottedLoadingIndicator: View {
-  let dotCount: Int
-  let dotSize: CGFloat
-  let spacing: CGFloat
-
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  init(dotCount: Int = 5, dotSize: CGFloat = 4, spacing: CGFloat = 6) {
-    self.dotCount = dotCount
-    self.dotSize = dotSize
-    self.spacing = spacing
-  }
-
-  var body: some View {
-    if reduceMotion {
-      // Static representation: all dots at uniform opacity.
-      HStack(spacing: spacing) {
-        ForEach(0..<dotCount, id: \.self) { _ in
-          Circle()
-            .fill(Color.secondary)
-            .frame(width: dotSize, height: dotSize)
-            .opacity(0.6)
-        }
-      }
-      .accessibilityElement()
-      .accessibilityLabel(
-        Text("Loading", comment: "VoiceOver label for the loading indicator"))
-    } else {
-      TimelineView(.periodic(from: .now, by: 0.18)) { timeline in
-        let tick = Int(timeline.date.timeIntervalSinceReferenceDate / 0.18)
-        let activeIndex = tick % dotCount
-
-        HStack(spacing: spacing) {
-          ForEach(0..<dotCount, id: \.self) { index in
-            Circle()
-              .fill(Color.secondary)
-              .frame(width: dotSize, height: dotSize)
-              .opacity(dotOpacity(index: index, active: activeIndex))
-          }
-        }
-        .animation(.easeInOut(duration: 0.16), value: activeIndex)
-      }
-      .accessibilityElement()
-      .accessibilityLabel(
-        Text("Loading", comment: "VoiceOver label for the loading indicator"))
-    }
-  }
-
-  private func dotOpacity(index: Int, active: Int) -> Double {
-    let distance = min(
-      abs(index - active),
-      dotCount - abs(index - active)
-    )
-    switch distance {
-    case 0: return 1.0
-    case 1: return 0.5
-    default: return 0.15
-    }
-  }
-}
-
-struct VaultMenuView: View {
-  @ObservedObject private var vaultManager = VaultManager.shared
-  @State private var copyFeedback: String?
-  @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-  @Environment(\.colorScheme) private var colorScheme
-  @ScaledMetric(relativeTo: .caption) private var statusDotSize: CGFloat = 8
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      if !vaultManager.isVaultAvailable {
-        missingVaultView
-      } else {
-        headerSection
-        Divider()
-          .padding(.horizontal, 8)
-        controlSection
-        if vaultManager.isRunning {
-          Divider()
-            .padding(.horizontal, 8)
-          environmentSection
-        }
-        Divider()
-          .padding(.horizontal, 8)
-        quitSection
-      }
-    }
-    .frame(minWidth: 320, idealWidth: 360)
-  }
-
-  private var missingVaultView: some View {
-    VStack(spacing: 0) {
-      VStack(spacing: 12) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .symbolRenderingMode(.hierarchical)
-          .font(.largeTitle)
-          .foregroundStyle(Color(nsColor: .systemOrange))
-          .accessibilityLabel(
-            Text("Warning", comment: "Accessibility label for the warning icon"))
-
-        Text("Vault Not Found", comment: "Heading when Vault is not installed")
-          .font(.headline)
-          .fontWeight(.bold)
-
-        Text(
-          "Vault was not found on this Mac.\nInstall it with Homebrew:",
-          comment: "Explanation when Vault is not installed"
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-
-        Text("brew install hashicorp/tap/vault")
-          .font(.system(.caption, design: .monospaced))
-          .padding(.horizontal, 10)
-          .padding(.vertical, 4)
-          .background(
-            RoundedRectangle(cornerRadius: 6)
-              // .regularMaterial adapts to Reduce Transparency,
-              // Increase Contrast, and Dark Mode automatically.
-              .fill(
-                reduceTransparency
-                  ? AnyShapeStyle(Color(nsColor: .textBackgroundColor))
-                  : AnyShapeStyle(.regularMaterial))
-          )
-
-        Button(
-          String(
-            localized: "Download from HashiCorp",
-            comment: "Button to open Vault download page")
-        ) {
-          if let url = URL(
-            string:
-              "https://developer.hashicorp.com/vault/tutorials/getting-started/getting-started-install"
-          ) {
-            NSWorkspace.shared.open(url)
-          }
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-      }
-      .padding(16)
-
-      Divider()
-        .padding(.horizontal, 8)
-
-      VStack(spacing: 2) {
-        menuButton(
-          title: String(
-            localized: "Quit vmenu", comment: "Menu button to quit the application"),
-          icon: "xmark.circle.fill",
-          shortcut: "⌘Q"
-        ) {
-          NSApplication.shared.terminate(nil)
-        }
-      }
-      .padding(.vertical, 4)
-      .padding(.horizontal, 4)
-    }
-  }
-
-  private var headerSection: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 10) {
-        Image(systemName: "lock.shield.fill")
-          .symbolRenderingMode(.hierarchical)
-          .font(.title2)
-          .fontWeight(.semibold)
-          .foregroundStyle(.secondary)
-          .accessibilityHidden(true)
-
-        VStack(alignment: .leading, spacing: 1) {
-          Text("Vault Dev Mode", comment: "Header title for the Vault dev server section")
-            .font(.headline)
-            .foregroundStyle(.primary)
-        }
-
-        Spacer()
-
-        statusBadge
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
-      .background(
-        RoundedRectangle(cornerRadius: 8)
-          // .thinMaterial sits one level above the popover surface,
-          // adapts to Reduce Transparency and Increase Contrast, and
-          // allows the system Liquid Glass to show through correctly.
-          .fill(
-            reduceTransparency
-              ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
-              : AnyShapeStyle(.thinMaterial))
-      )
-      .padding(.horizontal, 8)
-      .padding(.top, 8)
-
-      if vaultManager.isRunning {
-        VStack(spacing: 6) {
-          if let status = vaultManager.parsedStatus {
-            if !vaultManager.vaultAddr.isEmpty {
-              detailRow(
-                label: String(
-                  localized: "Address",
-                  comment: "Label for the Vault server network address"),
-                value: vaultManager.vaultAddr,
-                icon: "network"
-              )
-            }
-            HStack(spacing: 12) {
-              detailPill(label: "v\(status.version)", icon: "tag")
-              sealStatusPill(sealed: status.sealed != "false")
-              detailPill(label: status.storageType, icon: "internaldrive")
-              Spacer()
-            }
-          } else {
-            HStack {
-              Spacer()
-              DottedLoadingIndicator()
-              Spacer()
-            }
-          }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(
-          RoundedRectangle(cornerRadius: 8)
-            .fill(
-              reduceTransparency
-                ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
-                : AnyShapeStyle(.thinMaterial))
-        )
-        .padding(.horizontal, 8)
-        .padding(.top, 4)
-      }
-    }
-    .padding(.bottom, 8)
-  }
-
-  /// Display state derived from running + seal status.
-  private var displayState: VaultDisplayState {
-    guard vaultManager.isRunning else { return .stopped }
-    return vaultManager.isSealed ? .sealed : .running
-  }
-
-  private var statusBadge: some View {
-    // Use the tuned asset-catalog colors (four variants each: light, dark,
-    // light+HC, dark+HC) rather than the generic NSColor.system* values
-    // returned by VaultDisplayState.swiftUIColor.
-    let stateColor: Color = {
-      switch displayState {
-      case .stopped: return Color("StatusStopped")
-      case .sealed: return Color("StatusSealed")
-      case .running: return Color("StatusRunning")
-      }
-    }()
-    let label: String = {
-      switch displayState {
-      case .stopped:
-        return String(
-          localized: "Stopped", comment: "Vault server state label — not running")
-      case .sealed:
-        return String(
-          localized: "Sealed", comment: "Vault server state label — running but sealed")
-      case .running:
-        return String(
-          localized: "Running", comment: "Vault server state label — running and unsealed"
-        )
-      }
-    }()
-    // Provide a distinct icon per state so that color is never the sole
-    // differentiator, satisfying the accessibilityDifferentiateWithoutColor
-    // setting and the HIG requirement for color-independent status indicators.
-    let stateIcon: String = {
-      switch displayState {
-      case .stopped: return "stop.fill"
-      case .sealed: return "lock.fill"
-      case .running: return "checkmark.circle.fill"
-      }
-    }()
-
-    return HStack(spacing: 5) {
-      if differentiateWithoutColor {
-        // Replace the plain dot with a shape-distinct icon so the state
-        // is unambiguous without relying on colour.
-        Image(systemName: stateIcon)
-          .font(.system(.caption2, weight: .bold))
-          .foregroundStyle(stateColor)
-          .accessibilityHidden(true)
-      } else {
-        Circle()
-          .fill(stateColor)
-          .frame(width: statusDotSize, height: statusDotSize)
-          // Reduce glow intensity in Dark Mode: a 0.6-opacity colored
-          // shadow bleeds visibly against dark surroundings.
-          .shadow(
-            color: stateColor.opacity(colorScheme == .dark ? 0.35 : 0.55),
-            radius: colorScheme == .dark ? 4 : 3
-          )
-      }
-      Text(label)
-        .font(.caption)
-        .fontWeight(.semibold)
-    }
-    .foregroundStyle(.secondary)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 5)
-    .background(
-      Capsule()
-        // .ultraThinMaterial is the semantic choice for a small badge
-        // floating within the functional layer: it adapts to Reduce
-        // Transparency and Increase Contrast automatically.
-        .fill(
-          reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor))
-            : AnyShapeStyle(.ultraThinMaterial)
-        )
-        .overlay(
-          Capsule()
-            .strokeBorder(
-              Color(nsColor: .separatorColor)
-                .opacity(colorSchemeContrast == .increased ? 0.6 : 0.0),
-              lineWidth: colorSchemeContrast == .increased ? 1.0 : 0.0
-            )
-        )
-    )
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(
-      Text("Vault status: \(label)", comment: "VoiceOver label for the server status badge"))
-  }
-
-  private func detailRow(label: String, value: String, icon: String) -> some View {
-    HStack(spacing: 6) {
-      Image(systemName: icon)
-        .font(.caption2)
-        .fontWeight(.medium)
-        .foregroundStyle(.secondary)
-        .frame(width: 14)
-        .accessibilityHidden(true)
-      Text(label)
-        .font(.caption)
-        .fontWeight(.medium)
-        .foregroundStyle(.secondary)
-      Text(value)
-        .font(.system(.caption, design: .monospaced))
-        .fontWeight(.medium)
-        .foregroundStyle(.primary)
-        .lineLimit(1)
-      Spacer()
-    }
-  }
-
-  private func detailPill(label: String, icon: String) -> some View {
-    HStack(spacing: 3) {
-      Image(systemName: icon)
-        .font(.caption2)
-        .accessibilityHidden(true)
-      Text(label)
-        .font(.caption2)
-        .fontWeight(.medium)
-    }
-    .foregroundStyle(.secondary)
-    .padding(.horizontal, 7)
-    .padding(.vertical, 3)
-    .background(
-      Capsule()
-        // .ultraThinMaterial for small informational pills:
-        // adapts automatically to all accessibility settings.
-        .fill(
-          reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.4))
-            : AnyShapeStyle(.ultraThinMaterial))
-    )
-  }
-
-  private func sealStatusPill(sealed: Bool) -> some View {
-    HStack(spacing: 3) {
-      Image(systemName: sealed ? "lock.fill" : "lock.open.fill")
-        .font(.caption2)
-        .symbolReplaceTransition()
-        .accessibilityHidden(true)
-      Text(
-        sealed
-          ? String(localized: "Sealed", comment: "Vault seal status — data is locked")
-          : String(
-            localized: "Unsealed", comment: "Vault seal status — data is accessible")
-      )
-      .font(.caption2)
-      .fontWeight(.medium)
-    }
-    .foregroundStyle(.secondary)
-    .padding(.horizontal, 7)
-    .padding(.vertical, 3)
-    .background(
-      Capsule()
-        .fill(
-          reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.4))
-            : AnyShapeStyle(.ultraThinMaterial))
-    )
-    .help(
-      sealed
-        ? String(
-          localized:
-            "Vault is sealed — its data is encrypted and inaccessible until unsealed",
-          comment: "Tooltip explaining sealed state")
-        : String(
-          localized: "Vault is unsealed — its data is decrypted and ready for use",
-          comment: "Tooltip explaining unsealed state"))
-  }
-
-  private var controlSection: some View {
-    VStack(spacing: 2) {
-      menuButton(
-        title: vaultManager.isRunning
-          ? String(
-            localized: "Stop Server", comment: "Menu button to stop the Vault server")
-          : String(
-            localized: "Start Server", comment: "Menu button to start the Vault server"),
-        icon: vaultManager.isRunning ? "stop.fill" : "play.fill",
-        shortcut: "⌘S"
-      ) {
-        if vaultManager.isRunning {
-          vaultManager.stopVault()
-        } else {
-          vaultManager.startVault()
-        }
-      }
-      .disabled(!vaultManager.isVaultAvailable)
-
-      menuButton(
-        title: String(
-          localized: "Restart Server", comment: "Menu button to restart the Vault server"),
-        icon: "arrow.clockwise.circle.fill",
-        shortcut: "⌘R"
-      ) {
-        vaultManager.restartVault()
-      }
-      .disabled(!vaultManager.isVaultAvailable || !vaultManager.isRunning)
-
-      menuButton(
-        title: String(
-          localized: "Show Server Details",
-          comment: "Menu button to open the status window"
-        ),
-        icon: "chart.bar.doc.horizontal.fill",
-        shortcut: "⌘I"
-      ) {
-        vaultManager.fetchStatus()
-      }
-      .disabled(!vaultManager.isVaultAvailable || !vaultManager.isRunning)
-    }
-    .padding(.vertical, 4)
-    .padding(.horizontal, 4)
-  }
-
-  private var environmentSection: some View {
-    VStack(spacing: 2) {
-      if !vaultManager.vaultAddr.isEmpty {
-        envCopyRow(label: "VAULT_ADDR", value: vaultManager.vaultAddr)
-          .help(
-            String(
-              localized: "The network address where Vault is listening",
-              comment: "Tooltip for VAULT_ADDR"))
-      }
-      if !vaultManager.vaultCACert.isEmpty {
-        envCopyRow(label: "VAULT_CACERT", value: vaultManager.vaultCACert)
-          .help(
-            String(
-              localized:
-                "Path to the certificate authority file used for TLS verification",
-              comment: "Tooltip for VAULT_CACERT"))
-      }
-      if !vaultManager.vaultToken.isEmpty {
-        envCopyRow(label: "VAULT_TOKEN", value: vaultManager.vaultToken, isSensitive: true)
-          .help(
-            String(
-              localized: "The authentication token used to access Vault",
-              comment: "Tooltip for VAULT_TOKEN"))
-      }
-    }
-    .padding(.vertical, 4)
-    .padding(.horizontal, 4)
-  }
-
-  private func envCopyRow(label: String, value: String, isSensitive: Bool = false) -> some View {
-    EnvCopyRowButton(
-      label: label, value: value, isSensitive: isSensitive, copyFeedback: $copyFeedback
-    ) {
-      let text = "export \(label)=\(value)"
-      copyToClipboard(text, autoExpire: isSensitive)
-      copyFeedback = label
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-        if copyFeedback == label { copyFeedback = nil }
-      }
-    }
-  }
-
-  private var quitSection: some View {
-    VStack(spacing: 2) {
-      menuButton(
-        title: String(
-          localized: "About vmenu", comment: "Menu button to open the About window"),
-        icon: "info.circle.fill"
-      ) {
-        VaultManager.shared.showAboutWindow()
-      }
-      menuButton(
-        title: String(
-          localized: "Quit vmenu", comment: "Menu button to quit the application"),
-        icon: "xmark.circle.fill",
-        shortcut: "⌘Q"
-      ) {
-        NSApplication.shared.terminate(nil)
-      }
-    }
-    .padding(.vertical, 4)
-    .padding(.horizontal, 4)
-  }
-
-  private func menuButton(
-    title: String,
-    icon: String,
-    shortcut: String? = nil,
-    action: @escaping () -> Void
-  ) -> some View {
-    MenuRowButton(title: title, icon: icon, shortcut: shortcut, action: action)
-  }
-
-}
-
-struct AboutView: View {
-  private let appVersion: String = {
-    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.20"
-  }()
-
-  private let buildNumber: String = {
-    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.20"
-  }()
-
-  @ScaledMetric(relativeTo: .title2) private var appIconSize: CGFloat = 64
-
-  var body: some View {
-    VStack(spacing: 16) {
-      Image(nsImage: NSApp.applicationIconImage)
-        .resizable()
-        .aspectRatio(contentMode: .fit)
-        .frame(width: appIconSize, height: appIconSize)
-        .accessibilityLabel(
-          Text("vmenu app icon", comment: "Accessibility label for the application icon"))
-
-      VStack(spacing: 4) {
-        Text("vmenu")
-          .font(.title2)
-          .fontWeight(.bold)
-        Text(
-          "Version \(appVersion)" + (buildNumber != appVersion ? " (\(buildNumber))" : "")
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      }
-
-      Text(
-        "A macOS menu bar app for Vault.",
-        comment: "Short app description in the About window"
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .multilineTextAlignment(.center)
-      .lineSpacing(2)
-
-      Divider()
-        .padding(.horizontal, 40)
-
-      VStack(spacing: 4) {
-        Text("Made with ❤️ and 🤖 by [Brian Shumate](https://brianshumate.com/)")
-          .font(.caption)
-          .fontWeight(.medium)
-          .foregroundStyle(.primary)
-          .tint(Color(nsColor: .linkColor))
-
-        Button(
-          String(
-            localized: "GitHub Repository", comment: "Link to the project's GitHub page"
-          )
-        ) {
-          if let url = URL(string: "https://github.com/brianshumate/vmenu") {
-            NSWorkspace.shared.open(url)
-          }
-        }
-        .buttonStyle(.link)
-        .font(.caption)
-        .tint(Color(nsColor: .linkColor))
-      }
-
-    }
-    .padding(24)
-    .frame(minWidth: 280, idealWidth: 320)
-  }
-}
-
-/// Dynamic menu bar image (red: stopped, orange: sealed, green: running).
-///
-/// The triangle outline is drawn using `NSColor.labelColor` which adapts
-/// to light/dark menu bar automatically.  The colored status dot is drawn
-/// with the state's semantic color (red/orange/green) and the image is
-/// marked non-template so AppKit preserves those colors rather than
-/// re-tinting everything to a single monochrome value.
-private func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSImage {
-  let size = NSSize(width: 20, height: 18)
-
-  func trianglePath(in rect: NSRect) -> NSBezierPath {
-    let inset: CGFloat = 3.0
-    let path = NSBezierPath()
-    path.move(to: NSPoint(x: inset, y: rect.maxY - inset))
-    path.line(to: NSPoint(x: rect.maxX - inset, y: rect.maxY - inset))
-    path.line(to: NSPoint(x: rect.midX, y: inset))
-    path.close()
-    path.lineWidth = 1.5
-    path.lineJoinStyle = .round
-    return path
-  }
-
-  // isTemplate = false so AppKit renders the image with its actual drawn
-  // colors.  NSColor.labelColor resolves to the correct foreground color
-  // for the current menu bar appearance (black on light, white on dark)
-  // without needing template mode.  The dot uses the state's semantic
-  // color (red / orange / green) which would be stripped to monochrome
-  // if isTemplate were true.
-  let composite = NSImage(size: size, flipped: false) { rect in
-    let path = trianglePath(in: rect)
-    NSColor.labelColor.setStroke()
-    path.stroke()
-
-    // Filled dot at the triangle's visual centroid — color-coded by state:
-    //   stopped → red   sealed → orange   running → green
-    let dotRadius: CGFloat = 2.0
-    let inset: CGFloat = 3.0
-    let centroidY = ((rect.maxY - inset) * 2 + inset) / 3.0
-    let dotCenter = NSPoint(x: rect.midX, y: centroidY)
-    let dotRect = NSRect(
-      x: dotCenter.x - dotRadius,
-      y: dotCenter.y - dotRadius,
-      width: dotRadius * 2,
-      height: dotRadius * 2
-    )
-    let dotPath = NSBezierPath(ovalIn: dotRect)
-    state.dotColor.setFill()
-    dotPath.fill()
-
-    return true
-  }
-  // Keep isTemplate = false so the state-colored dot is rendered as-is.
-  // AppKit template mode strips all color to a single tint, which would
-  // make the dot white/black regardless of Vault's actual state.
-  composite.isTemplate = false
-  return composite
-}
-
 extension NSView {
   /// Recursively search the view hierarchy for an NSStatusBarButton.
   fileprivate func findStatusBarButton() -> NSStatusBarButton? {

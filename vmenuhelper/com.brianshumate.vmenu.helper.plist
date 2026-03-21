@@ -10,6 +10,13 @@
   SMAppService.agent(plistName:) reads this to register the helper with
   launchd. The MachServices key exposes the XPC endpoint that the
   sandboxed main app connects to.
+
+  macOS 26 (Tahoe) notes:
+  - KeepAlive with SuccessfulExit=false and Crashed=true ensures launchd
+    restarts the helper after crashes or unexpected exits.
+  - ProcessType=Interactive is recommended for XPC services that respond
+    to user actions to get appropriate scheduling priority.
+  - ThrottleInterval limits restart rate if the helper keeps crashing.
 -->
 <plist version="1.0">
 <dict>
@@ -28,6 +35,12 @@
     <dict>
         <key>SuccessfulExit</key>
         <false />
+        <key>Crashed</key>
+        <true />
     </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
 </dict>
 </plist>

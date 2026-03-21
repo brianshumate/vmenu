@@ -48,20 +48,24 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
     _ listener: NSXPCListener,
     shouldAcceptNewConnection newConnection: NSXPCConnection
   ) -> Bool {
+    logger.info("[HELPER-XPC] Incoming connection from PID \(newConnection.processIdentifier)")
+
     // Validate the connecting process is our main app by checking its
     // code-signing identity.  Reject connections that do not satisfy
     // the requirement — this prevents local privilege escalation
     // through the helper's Mach service.
     if !validateConnection(newConnection) {
-      logger.error("Rejecting XPC connection — code-signing requirement not met (pid \(newConnection.processIdentifier))")
+      logger.error("[HELPER-XPC] Rejecting connection — code-signing requirement not met (pid \(newConnection.processIdentifier))")
       newConnection.invalidate()
       return false
     }
 
+    logger.info("[HELPER-XPC] Connection validated, setting up interface...")
     let interface = NSXPCInterface(with: VmenuHelperProtocol.self)
     newConnection.exportedInterface = interface
     newConnection.exportedObject = HelperHandler()
     newConnection.resume()
+    logger.info("[HELPER-XPC] Connection accepted and resumed")
     return true
   }
 
@@ -72,30 +76,60 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
   /// requirement string.
   private func validateConnection(_ connection: NSXPCConnection) -> Bool {
     let pid = connection.processIdentifier
+    logger.info("[HELPER-XPC] Validating connection from PID \(pid)")
+    logger.info("[HELPER-XPC] Using requirement: \(Self.signingRequirement, privacy: .public)")
 
     // Obtain the SecCode for the connecting process.
     var codeRef: SecCode?
     let attrs = [kSecGuestAttributePid: pid] as CFDictionary
-    guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &codeRef) == errSecSuccess,
+    let copyStatus = SecCodeCopyGuestWithAttributes(nil, attrs, [], &codeRef)
+    guard copyStatus == errSecSuccess,
           let code = codeRef
     else {
+      logger.error("[HELPER-XPC] SecCodeCopyGuestWithAttributes failed with status \(copyStatus)")
       return false
     }
+    logger.info("[HELPER-XPC] Got SecCode for PID \(pid)")
 
     // Compile the requirement string.
     var requirementRef: SecRequirement?
-    guard SecRequirementCreateWithString(
+    let createStatus = SecRequirementCreateWithString(
       Self.signingRequirement as CFString,
       [],
       &requirementRef
-    ) == errSecSuccess,
+    )
+    guard createStatus == errSecSuccess,
           let requirement = requirementRef
     else {
+      logger.error("[HELPER-XPC] SecRequirementCreateWithString failed with status \(createStatus)")
       return false
     }
+    logger.info("[HELPER-XPC] Compiled requirement successfully")
 
     // Evaluate the code against the requirement.
-    return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+    let checkStatus = SecCodeCheckValidity(code, [], requirement)
+    if checkStatus == errSecSuccess {
+      logger.info("[HELPER-XPC] Code signature validation PASSED")
+      return true
+    } else {
+      logger.error("[HELPER-XPC] Code signature validation FAILED with status \(checkStatus)")
+      // Log more details about the failure - need to get static code first
+      var staticCode: SecStaticCode?
+      if SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+         let staticCodeRef = staticCode {
+        var signingInfo: CFDictionary?
+        if SecCodeCopySigningInformation(staticCodeRef, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
+           let info = signingInfo as? [String: Any] {
+          if let identifier = info[kSecCodeInfoIdentifier as String] {
+            logger.error("[HELPER-XPC] Connecting process identifier: \(String(describing: identifier), privacy: .public)")
+          }
+          if let teamID = info[kSecCodeInfoTeamIdentifier as String] {
+            logger.error("[HELPER-XPC] Connecting process team ID: \(String(describing: teamID), privacy: .public)")
+          }
+        }
+      }
+      return false
+    }
   }
 }
 
@@ -653,12 +687,35 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
 
 // MARK: - Main entry point
 
+logger.info("[HELPER-STARTUP] vmenu XPC helper starting...")
+logger.info("[HELPER-STARTUP] Process ID: \(getpid())")
+logger.info("[HELPER-STARTUP] User ID: \(getuid())")
+logger.info("[HELPER-STARTUP] Mach service name: \(vmenuHelperMachServiceName)")
+
+// Log bundle and code signing info for debugging
+if let bundlePath = Bundle.main.bundlePath as String? {
+  logger.info("[HELPER-STARTUP] Bundle path: \(bundlePath, privacy: .public)")
+}
+if let bundleID = Bundle.main.bundleIdentifier {
+  logger.info("[HELPER-STARTUP] Bundle identifier: \(bundleID, privacy: .public)")
+} else {
+  logger.warning("[HELPER-STARTUP] No bundle identifier found - this may cause XPC issues on macOS 26")
+}
+
 let delegate = HelperDelegate()
+logger.info("[HELPER-STARTUP] Created HelperDelegate")
+
 let listener = NSXPCListener(machServiceName: vmenuHelperMachServiceName)
+logger.info("[HELPER-STARTUP] Created NSXPCListener for Mach service")
+
 listener.delegate = delegate
+logger.info("[HELPER-STARTUP] Set listener delegate")
+
 listener.resume()
+logger.info("[HELPER-STARTUP] Listener resumed - now accepting XPC connections")
 
 // Run the run loop forever. The helper is a long-running agent managed by
 // SMAppService. It will be started automatically when the main app is
 // launched and can be stopped when the app terminates.
+logger.info("[HELPER-STARTUP] Entering run loop...")
 RunLoop.current.run()

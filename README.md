@@ -203,6 +203,40 @@ The app also uses the these defense-in-depth measures:
 - **Log file safety** — the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
 - **XPC isolation** — the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
 
+## Uninstallation
+
+To completely remove **vmenu** and its associated files:
+
+1. **Quit vmenu** if it's running (⌘Q or click Quit in the menu).
+
+2. **Stop the Vault server** before quitting if it is running.
+
+3. **Remove the LaunchAgents** (run in Terminal):
+
+   ```shell
+   # Unload and remove the Vault LaunchAgent
+   launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hashicorp.vault.plist 2>/dev/null && \
+   rm -f ~/Library/LaunchAgents/com.hashicorp.vault.plist
+
+   # Unload and remove the vmenu helper LaunchAgent
+   launchctl bootout gui/$(id -u) gui/$(id -u)/com.brianshumate.vmenu.helper 2>/dev/null
+   ```
+
+4. **Remove log files** (optional):
+
+   ```shell
+   rm -rf ~/Library/Logs/vmenu
+   ```
+
+5. **Delete the app**:
+
+   ```shell
+   rm -rf /Applications/vmenu.app
+   ```
+
+> [!NOTE]
+> The Vault dev server generates a temporary CA certificate in `/var/folders/` which macOS automatically cleans up, and so you do not need to manually remove that file.
+
 ## Acknowledgments and disclaimers
 
 Thanks to my friends at HashiCorp for inspiring me to build **vmenu**. I hope you also find it useful.

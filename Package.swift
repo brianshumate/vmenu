@@ -39,7 +39,7 @@ let package = Package(
         "build-app.sh",
         "scripts"
       ],
-      sources: ["vmenu.swift", "StatusViews.swift"]
+      sources: ["vmenu.swift", "StatusViews.swift", "VmenuViews.swift"]
     ),
     .executableTarget(
       name: "vmenu-helper",
