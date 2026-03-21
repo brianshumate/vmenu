@@ -102,7 +102,7 @@ if [ -d "${XCASSETS_SRC}" ] && command -v xcrun &>/dev/null && xcrun actool --ve
         --notices \
         --warnings \
         --platform macosx \
-        --minimum-deployment-target 13.0 \
+        --minimum-deployment-target 26.0 \
         --target-device mac \
         --app-icon AppIcon \
         --output-partial-info-plist "${ACTOOL_PARTIAL_PLIST}" \
@@ -176,36 +176,91 @@ if [ "${SIGN}" = "sign" ]; then
     echo "Signing with: ${IDENTITY}"
 
     # Sign helper first (inner binary before outer bundle)
-    echo "Signing helper..."
-    codesign --force --options runtime \
-        --entitlements "${HELPER_ENTITLEMENTS}" \
-        --sign "${IDENTITY}" \
-        --timestamp \
-        "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+    # Use explicit identifier to match the Mach service name for XPC lookup
+    echo "Signing helper with identifier ${HELPER_NAME}..."
+    HELPER_PARENT_CONSTRAINT="${SCRIPT_DIR}/vmenuhelper/launch-constraint-parent.plist"
+    if [ -f "${HELPER_PARENT_CONSTRAINT}" ]; then
+        echo "  (applying parent launch constraint for macOS 26 compatibility)"
+        codesign --force --options runtime \
+            --identifier "${HELPER_NAME}" \
+            --entitlements "${HELPER_ENTITLEMENTS}" \
+            --launch-constraint-parent "${HELPER_PARENT_CONSTRAINT}" \
+            --sign "${IDENTITY}" \
+            --timestamp \
+            "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+    else
+        codesign --force --options runtime \
+            --identifier "${HELPER_NAME}" \
+            --entitlements "${HELPER_ENTITLEMENTS}" \
+            --sign "${IDENTITY}" \
+            --timestamp \
+            "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+    fi
 
-    # Sign main binary
+    # Sign main binary with explicit identifier
     echo "Signing main binary..."
     codesign --force --options runtime \
+        --identifier "com.brianshumate.vmenu" \
         --entitlements "${ENTITLEMENTS}" \
         --sign "${IDENTITY}" \
         --timestamp \
         "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
-    # Sign the bundle
+    # Sign the bundle (don't use --deep to avoid re-signing nested components)
     echo "Signing bundle..."
     codesign --force --options runtime \
+        --identifier "com.brianshumate.vmenu" \
         --entitlements "${ENTITLEMENTS}" \
         --sign "${IDENTITY}" \
         --timestamp \
         "${APP_DIR}"
 
-    echo "Verifying signature..."
+    echo "Verifying signatures..."
     codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+    echo "  Helper identifier: $(codesign -dv "${APP_DIR}/Contents/MacOS/${HELPER_NAME}" 2>&1 | grep 'Identifier=' | cut -d= -f2)"
+    echo "  Main app identifier: $(codesign -dv "${APP_DIR}/Contents/MacOS/${APP_NAME}" 2>&1 | grep 'Identifier=' | cut -d= -f2)"
 else
     # Ad-hoc sign for local use
-    # Sign helper first (inner before outer)
-    codesign --force --sign - "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
-    codesign --force --deep --sign - "${APP_DIR}"
+    # On macOS 26 (Tahoe), launch constraints require:
+    #   1. Explicit bundle identifier matching the Mach service name
+    #   2. Entitlements applied even for ad-hoc signing
+    #   3. The helper must be signed with its own identifier, not inherit from parent
+    #   4. Do NOT use --deep on the bundle as it re-signs nested components with wrong identifiers
+
+    echo "Signing helper with identifier ${HELPER_NAME}..."
+    # On macOS 26 (Tahoe), ad-hoc signed helpers launched by launchd via SMAppService
+    # must NOT have launch constraints applied - the constraints cause immediate
+    # SIGKILL with "Launch Constraint Violation". Launch constraints are only
+    # meaningful for Developer ID signed binaries.
+    #
+    # For ad-hoc signing, we rely on:
+    # 1. The app being in /Applications (satisfies Gatekeeper path rules)
+    # 2. The helper having the correct bundle identifier matching the Mach service
+    # 3. SMAppService registering the helper with launchd properly
+    codesign --force \
+        --identifier "${HELPER_NAME}" \
+        --entitlements "${HELPER_ENTITLEMENTS}" \
+        --sign - \
+        "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+
+    echo "Signing main app binary..."
+    codesign --force \
+        --identifier "com.brianshumate.vmenu" \
+        --entitlements "${ENTITLEMENTS}" \
+        --sign - \
+        "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+
+    echo "Signing bundle (without re-signing nested components)..."
+    # Sign the bundle itself - codesign will seal the already-signed nested components
+    codesign --force \
+        --identifier "com.brianshumate.vmenu" \
+        --entitlements "${ENTITLEMENTS}" \
+        --sign - \
+        "${APP_DIR}"
+
+    echo "Verifying signatures..."
+    echo "  Helper identifier: $(codesign -dv "${APP_DIR}/Contents/MacOS/${HELPER_NAME}" 2>&1 | grep 'Identifier=' | cut -d= -f2)"
+    echo "  Main app identifier: $(codesign -dv "${APP_DIR}/Contents/MacOS/${APP_NAME}" 2>&1 | grep 'Identifier=' | cut -d= -f2)"
     echo "Ad-hoc signed (use './build-app.sh release sign' for distribution signing)."
 fi
 

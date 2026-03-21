@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Launch Constraint (Parent) for vmenu helper
+
+  This constraint allows the helper to be launched by launchd (PID 1),
+  which is the init process on macOS. SMAppService spawns the helper
+  via launchd, so the parent is always the init process.
+
+  Using is-init-proc is the correct constraint for launchd-spawned agents.
+-->
+<plist version="1.0">
+<dict>
+    <key>is-init-proc</key>
+    <true/>
+</dict>
+</plist>
