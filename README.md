@@ -11,8 +11,8 @@
 <p align="center">
   <a href="https://github.com/brianshumate/vmenu/actions/workflows/swift.yml"><img src="https://github.com/brianshumate/vmenu/actions/workflows/swift.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/brianshumate/vmenu/releases/latest"><img src="https://img.shields.io/github/v/release/brianshumate/vmenu?label=release&color=blue" alt="Latest Release"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey?logo=apple" alt="macOS 13+">
-  <img src="https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white" alt="Swift 5.9">
+  <img src="https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey?logo=apple" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white" alt="Swift 6.0">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/brianshumate/vmenu" alt="License"></a>
 </p>
 
@@ -42,7 +42,7 @@ Though **vmenu** is just a cute and small menu bar app, it packs a lot of though
 - **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands for Terminal session use. You can also copy or view the initial root token value right from the menu.
 - **Server status at a glance**: Vault version, seal status, storage backend, address, and unseal key along with raw status output.
 - **macOS-native**: pure SwiftUI, lightweight, no Electron, no runtime dependencies.
-- **Fully sandboxed**: the main app runs inside the App Sandbox; privileged operations are delegated to a sand-boxed XPC helper via `SMAppService`.
+- **Fully sandboxed**: the main app runs inside the App Sandbox; privileged operations are delegated to an unsandboxed XPC helper via `SMAppService`.
 - **launchd integration**: manages Vault through a proper LaunchAgent.
 - **Keyboard shortcuts** for every menu action (⌘S, ⌘R, ⌘I, ⌘Q).
 
@@ -68,7 +68,7 @@ A Vault dev mode server managed with **vmenu** writes to 2 log files under your 
 
 ## Prerequisites
 
-- **vmenu** requires **macOS 13 (Ventura) or later** and is tested on macOS 26  (Tahoe).
+- **vmenu** requires **macOS 14 (Sonoma) or later** and is tested on macOS 26 (Tahoe).
 
 - **vmenu** needs the `vault` binary installed and available in your `PATH`.
 
@@ -145,7 +145,7 @@ The build script reads the latest git tag (e.g. `v1.5`) and stamps it into `CFBu
 
 ## How it works and technical details
 
-**vmenu** is a menu bar–only app (`LSUIElement = true`), so it has no Dock icon or main window.
+**vmenu** is a menu-bar-only app (`LSUIElement = true`), so it has no Dock icon or main window.
 
 ### Architecture
 
@@ -201,6 +201,7 @@ The app also uses the these defense-in-depth measures:
 - **Ephemeral `URLSession`** use, so no credentials get cached to disk.
 - **CA certificate path validation** in the helper rejects symlinks, traversal, world-writable directories, and files with unsafe ownership or permissions.
 - **Log file safety**: the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
+- **XPC connection validation**: the helper validates each incoming XPC connection against a code-signing requirement. Developer ID signed builds enforce the full Apple certificate chain (`anchor apple generic`) and optional Team ID pinning. Ad-hoc signed builds verify the connecting process has the correct bundle identifier.
 - **XPC isolation**: the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
 
 ## Uninstallation

@@ -3,7 +3,7 @@ import OSLog
 import Security
 import ServiceManagement
 import SwiftUI
-import UserNotifications
+@preconcurrency import UserNotifications
 import VmenuCore
 import VmenuXPCProtocol
 
@@ -81,11 +81,30 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
       let status = VaultStatus(from: sealStatus, leader: leader)
       return (status.formatAsTable(), status)
     } catch {
-      let msg = String(
-        localized:
-          "Unable to reach the Vault server. Check that it is running and try again.\n\nDetails: \(error.localizedDescription)",
-        comment: "Error message when Vault HTTP API is unreachable"
-      )
+      // Provide a more specific message when the failure is caused by
+      // missing CA cert data (TLS challenge cancelled) vs. a genuine
+      // network error.  The CA cert is loaded via XPC, so if the
+      // helper is unreachable the cert data will be nil and every
+      // HTTPS request will fail with a cancelled challenge.
+      let msg: String
+      if caCertData == nil, addr.lowercased().hasPrefix("https") {
+        msg = String(
+          localized: """
+            Unable to verify the Vault server's TLS certificate. \
+            The CA certificate could not be loaded — the vmenu helper \
+            process may not be running.
+
+            Details: \(error.localizedDescription)
+            """,
+          comment: "Error message when TLS fails due to missing CA certificate"
+        )
+      } else {
+        msg = String(
+          localized:
+            "Unable to reach the Vault server. Check that it is running and try again.\n\nDetails: \(error.localizedDescription)",
+          comment: "Error message when Vault HTTP API is unreachable"
+        )
+      }
       return (msg, nil)
     }
   }
@@ -768,8 +787,8 @@ enum HelperAgentManager {
   /// The helper's launchd plist must be embedded in the app bundle at:
   ///   `Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist`
   ///
-  /// `SMAppService.agent(plistName:)` requires macOS 13+, which matches
-  /// vmenu's deployment target.
+  /// `SMAppService.agent(plistName:)` requires macOS 13+, which is below
+  /// vmenu's macOS 14+ deployment target.
   static func register() {
     // Debug: Log current status before registration attempt
     let currentStatus = status
@@ -820,18 +839,18 @@ enum HelperAgentManager {
       logger.debug("Unregister returned error (may be expected): \(error.localizedDescription, privacy: .public)")
     }
 
-    // On macOS 26, launchd needs more time to fully clean up the
-    // registration before we can re-register. Using a shorter delay
-    // can result in "already registered" errors or stale state.
-    Thread.sleep(forTimeInterval: 0.25)
-
-    // Re-register.
-    do {
-      try service.register()
-      logger.info("Helper agent re-registered successfully")
-    } catch {
-      logger.error(
-        "Failed to re-register helper agent: \(error.localizedDescription, privacy: .public)")
+    // Re-register after a short delay so launchd can clean up the
+    // previous registration.  This runs on @MainActor so we dispatch
+    // the re-registration asynchronously to avoid blocking the UI.
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      do {
+        try service.register()
+        logger.info("Helper agent re-registered successfully")
+      } catch {
+        logger.error(
+          "Failed to re-register helper agent: \(error.localizedDescription, privacy: .public)")
+      }
     }
   }
 
@@ -863,25 +882,26 @@ func registerHelperAgent() {
 // MARK: - VaultManager
 
 @MainActor
-class VaultManager: ObservableObject {
+@Observable
+class VaultManager {
   static let shared = VaultManager()
 
-  @Published var isRunning = false
-  @Published var vaultAddr = ""
-  @Published var vaultCACert = ""
-  @Published var vaultToken = ""
-  @Published var unsealKey = ""
-  @Published var isVaultAvailable = true
-  @Published var statusOutput = ""
-  @Published var parsedStatus: VaultStatus?
-  @Published var isRefreshing = false
+  var isRunning = false
+  var vaultAddr = ""
+  var vaultCACert = ""
+  var vaultToken = ""
+  var unsealKey = ""
+  var isVaultAvailable = true
+  var statusOutput = ""
+  var parsedStatus: VaultStatus?
+  var isRefreshing = false
 
   /// Indicates the XPC helper is not reachable.
   /// When `true`, the UI should show a warning and recovery options.
-  @Published var isHelperUnavailable = false
+  var isHelperUnavailable = false
 
   /// Detailed message about why the helper is unavailable.
-  @Published var helperUnavailableReason: String = ""
+  var helperUnavailableReason: String = ""
 
   /// HTTP client for direct Vault API calls (replaces `vault status` process
   /// spawning).  Reused across polling cycles so the underlying URLSession
@@ -969,17 +989,24 @@ class VaultManager: ObservableObject {
       logger.info("Initial helper status: \(String(describing: status))")
 
       // Handle requiresApproval status specifically on macOS 26.
+      // Don't return — fall through to the reachability check so the
+      // background polling can detect when the user approves the helper.
       if status == .requiresApproval {
         self.isHelperUnavailable = true
         self.helperUnavailableReason = String(
           localized: """
-            The vmenu helper requires your approval to run. \
-            Please enable it in System Settings > General > Login Items.
+            The vmenu helper requires your approval to run.
+
+            Open System Settings > General > Login Items, then \
+            enable the toggle next to "vmenu" under "Allow in the Background".
             """,
           comment: "Error message when helper requires user approval"
         )
         logger.warning("Helper requires approval — prompting user")
-        return
+        // Open System Settings automatically to reduce friction for
+        // standard users who may not know where to find this.
+        HelperAgentManager.openLoginItemsSettings()
+        // Don't return — let the background polling pick up approval.
       }
 
       // Ensure the helper is reachable before any operations.
@@ -1080,18 +1107,17 @@ class VaultManager: ObservableObject {
       Task { @MainActor in
         // Skip polling if helper is unavailable — we can't check anything.
         guard !self.isHelperUnavailable else {
-          // Periodically attempt silent recovery in case the helper
-          // becomes available again (e.g., after user approves it).
-          if self.helperRecoveryAttempts < self.maxHelperRecoveryAttempts {
-            let reachable = await self.xpc.ensureHelperReachable()
-            if reachable {
-              logger.info("Helper became available during background check")
-              self.isHelperUnavailable = false
-              self.helperUnavailableReason = ""
-              self.helperRecoveryAttempts = 0
-              self.hasPerformedInitialCheck = false
-              self.performInitialCheck()
-            }
+          // Always attempt silent recovery — the user may approve the
+          // helper in System Settings at any time, so we must keep
+          // checking regardless of how many previous attempts failed.
+          let reachable = await self.xpc.ensureHelperReachable()
+          if reachable {
+            logger.info("Helper became available during background check")
+            self.isHelperUnavailable = false
+            self.helperUnavailableReason = ""
+            self.helperRecoveryAttempts = 0
+            self.hasPerformedInitialCheck = false
+            self.performInitialCheck()
           }
           return
         }
@@ -1157,7 +1183,13 @@ class VaultManager: ObservableObject {
   /// simulate a click on the `NSStatusBarButton` that owns the popover,
   /// which goes through AppKit's normal state machine and properly marks
   /// the popover as dismissed.
+  ///
+  /// Fallback: if the `NSStatusBarButton` heuristic fails (e.g. because
+  /// macOS 26 changed the view hierarchy), we close the popover-style
+  /// windows directly.  This may cause the toggle-state desync, but is
+  /// better than leaving the popover visible behind a new window.
   private func dismissMenuBarExtra() {
+    // Primary: simulate a click on the status bar button.
     for window in NSApp.windows {
       guard let button = window.contentView?.findStatusBarButton() else {
         continue
@@ -1165,15 +1197,33 @@ class VaultManager: ObservableObject {
       button.performClick(nil)
       return
     }
+
+    // Fallback: close any MenuBarExtra popover windows directly.
+    // MenuBarExtra window-style popovers use `NSPanel` with a specific
+    // style mask.  We look for panels that are visible, borderless, and
+    // not our own managed windows.
+    for window in NSApp.windows {
+      if window !== statusWindow,
+         window !== aboutWindow,
+         window.isVisible,
+         window is NSPanel,
+         window.styleMask.contains(.nonactivatingPanel) {
+        window.orderOut(nil)
+      }
+    }
   }
 
-  /// Activate the application, bridging the API change between macOS 13 and 14+.
+  /// Activate the application so its windows come to the foreground.
+  ///
+  /// For `LSUIElement` apps (no Dock icon), `NSApp.activate()` alone
+  /// may not bring windows to front on macOS 26 because the app never
+  /// "owns" the foreground.  We temporarily switch to `.accessory`
+  /// activation policy so AppKit treats the app as eligible for
+  /// activation, then rely on the window's `.floating` level and
+  /// `orderFrontRegardless()` as a safety net.
   private func activateApp() {
-    if #available(macOS 14.0, *) {
-      NSApp.activate()
-    } else {
-      NSApp.activate(ignoringOtherApps: true)
-    }
+    NSApp.setActivationPolicy(.accessory)
+    NSApp.activate()
   }
 
   func showAboutWindow() {
@@ -1212,8 +1262,11 @@ class VaultManager: ObservableObject {
     // against the menu bar.
     window.layoutIfNeeded()
     window.center()
-    window.makeKeyAndOrderFront(nil)
     activateApp()
+    window.makeKeyAndOrderFront(nil)
+    // Safety net: ensure the window is visible even if activate()
+    // didn't bring the app to the foreground (LSUIElement apps).
+    window.orderFrontRegardless()
 
     aboutWindow = window
   }
@@ -1267,8 +1320,9 @@ class VaultManager: ObservableObject {
     window.center()
     window.isReleasedWhenClosed = false
     window.level = .floating
-    window.makeKeyAndOrderFront(nil)
     activateApp()
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
 
     statusWindow = window
   }
@@ -1321,24 +1375,53 @@ extension VaultManager {
       }
 
       // Kick-start ensures the job actually runs (RunAtLoad is false).
-      _ = await xpc.kickstartService()
-
-      self.isRunning = true
-
-      // Wait for Vault to finish writing its startup log.
-      try? await Task.sleep(nanoseconds: 2_000_000_000)
-      let maxAttempts = 5
-      for _ in 0..<maxAttempts {
-        if let logContent = await xpc.readStartupLog(),
-          logContent.contains("VAULT_ADDR") {
-          break
+      let kickstarted = await xpc.kickstartService()
+      if !kickstarted {
+        logger.error("Failed to kickstart Vault service — verifying via service status")
+        // Give launchd a moment to settle, then check if the service
+        // is actually running despite the kickstart exit code.
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let actuallyRunning = await xpc.checkServiceStatus()
+        if !actuallyRunning {
+          logger.error("Vault service is not running after kickstart failure")
+          self.isRunning = false
+          return
         }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
       }
 
-      await self.parseEnvironmentVariables()
-      self.refreshStatus()
+      self.isRunning = true
+      await awaitVaultStartupAndVerify()
     }
+  }
+
+  /// Waits for Vault to write its startup log, verifies the process
+  /// is still running, then parses environment variables and refreshes status.
+  private func awaitVaultStartupAndVerify() async {
+    // Wait for Vault to finish writing its startup log.
+    try? await Task.sleep(nanoseconds: 2_000_000_000)
+    let maxAttempts = 5
+    for attempt in 0..<maxAttempts {
+      if let logContent = await xpc.readStartupLog(),
+        logContent.contains("VAULT_ADDR") {
+        break
+      }
+      if attempt == maxAttempts - 1 {
+        logger.warning("Vault startup log did not contain VAULT_ADDR after \(maxAttempts) attempts")
+      }
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+
+    // Verify Vault is still running after the startup wait — it may
+    // have crashed during initialization.
+    let stillRunning = await xpc.checkServiceStatus()
+    if !stillRunning {
+      logger.error("Vault process exited during startup")
+      self.isRunning = false
+      return
+    }
+
+    await self.parseEnvironmentVariables()
+    self.refreshStatus()
   }
 
   func stopVault() {
@@ -1605,30 +1688,49 @@ class MenuBarVisibilityMonitor {
   private func sendHiddenNotification() {
     guard let center = Self.notificationCenter() else { return }
 
-    let content = UNMutableNotificationContent()
-    content.title = String(
-      localized: "vmenu Icon Hidden",
-      comment: "Notification title when menu bar icon is obscured by other icons")
-    content.body = String(
-      localized: """
-        Your vmenu menu bar icon is currently hidden by macOS. \
-        Try closing other menu bar apps or rearranging icons to make it visible again.
-        """,
-      comment: "Notification body explaining how to recover a hidden menu bar icon"
-    )
-    content.sound = .default
-
-    let request = UNNotificationRequest(
-      identifier: "vmenu-icon-hidden-\(UUID().uuidString)",
-      content: content,
-      trigger: nil
-    )
-
-    center.add(request) { error in
-      if let error {
-        logger.error(
-          "Failed to deliver menu bar visibility notification: \(error.localizedDescription, privacy: .public)"
+    // Check authorization status before attempting to send.
+    // If the user has denied permission, log once and skip.
+    center.getNotificationSettings { settings in
+      switch settings.authorizationStatus {
+      case .denied:
+        logger.info(
+          "Notification permission denied — skipping menu bar visibility alert. Enable in System Settings > Notifications > vmenu."
         )
+        return
+      case .notDetermined:
+        // Permission was never requested (shouldn't happen since we
+        // request at launch, but handle gracefully).
+        logger.info("Notification permission not determined — skipping alert")
+        return
+      default:
+        break
+      }
+
+      let content = UNMutableNotificationContent()
+      content.title = String(
+        localized: "vmenu Icon Hidden",
+        comment: "Notification title when menu bar icon is obscured by other icons")
+      content.body = String(
+        localized: """
+          Your vmenu menu bar icon is currently hidden by macOS. \
+          Try closing other menu bar apps or rearranging icons to make it visible again.
+          """,
+        comment: "Notification body explaining how to recover a hidden menu bar icon"
+      )
+      content.sound = .default
+
+      let request = UNNotificationRequest(
+        identifier: "vmenu-icon-hidden-\(UUID().uuidString)",
+        content: content,
+        trigger: nil
+      )
+
+      center.add(request) { error in
+        if let error {
+          logger.error(
+            "Failed to deliver menu bar visibility notification: \(error.localizedDescription, privacy: .public)"
+          )
+        }
       }
     }
   }
@@ -1707,7 +1809,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct VmenuApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-  @ObservedObject private var vaultManager = VaultManager.shared
+  private var vaultManager = VaultManager.shared
 
   private var displayState: VaultDisplayState {
     guard vaultManager.isRunning else { return .stopped }

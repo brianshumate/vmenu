@@ -4,17 +4,11 @@ import VmenuCore
 
 // MARK: - Symbol Effect Helpers
 
-/// Applies `.contentTransition(.symbolEffect(.replace))` on macOS 14+ and
-/// falls back to a plain view on macOS 13.  Keeps call sites clean while
-/// respecting the macOS 13 deployment target.
+/// Applies `.contentTransition(.symbolEffect(.replace))` for animated
+/// SF Symbol transitions.
 extension View {
-  @ViewBuilder
   func symbolReplaceTransition() -> some View {
-    if #available(macOS 14.0, *) {
-      self.contentTransition(.symbolEffect(.replace))
-    } else {
-      self
-    }
+    self.contentTransition(.symbolEffect(.replace))
   }
 }
 
@@ -252,7 +246,7 @@ struct DottedLoadingIndicator: View {
 }
 
 struct VaultMenuView: View {
-  @ObservedObject private var vaultManager = VaultManager.shared
+  private var vaultManager = VaultManager.shared
   @State private var copyFeedback: String?
   @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
