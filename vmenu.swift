@@ -178,7 +178,7 @@ final class XPCClient: @unchecked Sendable {
 
   /// Debug flag to enable verbose XPC logging.
   /// Set to true to diagnose connection issues.
-  private let debugLogging = true
+  private let debugLogging = false
 
   /// Tracks consecutive XPC failures to trigger recovery.
   private var consecutiveFailures = 0
