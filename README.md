@@ -38,12 +38,12 @@
 Though **vmenu** is just a cute and small menu bar app, it packs a lot of thoughtful features into a minimal surface area. Here are some of the things you can do:
 
 - **Start/stop/restart** a Vault dev server with a click or keyboard shortcut.
-- **Server readiness menu bar icon indicator** — green (unsealed), orange (sealed), red (stopped).
+- **Server readiness menu bar icon indicator**: green (unsealed), orange (sealed), red (stopped).
 - **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands for Terminal session use. You can also copy or view the initial root token value right from the menu.
 - **Server status at a glance**: Vault version, seal status, storage backend, address, and unseal key along with raw status output.
-- **macOS-native** — pure SwiftUI, lightweight, no Electron, no runtime dependencies.
-- **Fully sandboxed** — the main app runs inside the App Sandbox; privileged operations are delegated to a sand-boxed XPC helper via `SMAppService`.
-- **launchd integration** — manages Vault through a proper LaunchAgent.
+- **macOS-native**: pure SwiftUI, lightweight, no Electron, no runtime dependencies.
+- **Fully sandboxed**: the main app runs inside the App Sandbox; privileged operations are delegated to a sand-boxed XPC helper via `SMAppService`.
+- **launchd integration**: manages Vault through a proper LaunchAgent.
 - **Keyboard shortcuts** for every menu action (⌘S, ⌘R, ⌘I, ⌘Q).
 
 ### Menu bar icon
@@ -200,8 +200,8 @@ The app also uses the these defense-in-depth measures:
 - **Explicitly disabled unsigned executable memory** and **library validation bypass** in both components.
 - **Ephemeral `URLSession`** use, so no credentials get cached to disk.
 - **CA certificate path validation** in the helper rejects symlinks, traversal, world-writable directories, and files with unsafe ownership or permissions.
-- **Log file safety** — the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
-- **XPC isolation** — the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
+- **Log file safety**: the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
+- **XPC isolation**: the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
 
 ## Uninstallation
 
@@ -218,8 +218,9 @@ To completely remove **vmenu** and its associated files:
    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hashicorp.vault.plist 2>/dev/null && \
    rm -f ~/Library/LaunchAgents/com.hashicorp.vault.plist
 
-   # Unload and remove the vmenu helper LaunchAgent
-   launchctl bootout gui/$(id -u) gui/$(id -u)/com.brianshumate.vmenu.helper 2>/dev/null
+   # Unload and disable the vmenu helper LaunchAgent
+   launchctl bootout gui/$(id -u)/com.brianshumate.vmenu.helper 2>/dev/null
+   launchctl disable gui/$(id -u)/com.brianshumate.vmenu.helper 2>/dev/null
    ```
 
 4. **Remove log files** (optional):
