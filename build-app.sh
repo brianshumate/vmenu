@@ -97,12 +97,17 @@ ACTOOL_PARTIAL_PLIST="${APP_DIR}/Contents/Resources/actool-partial.plist"
 # nothing — the OS never reads uncompiled asset catalogs at runtime.
 if [ -d "${XCASSETS_SRC}" ] && command -v xcrun &>/dev/null && xcrun actool --version &>/dev/null 2>&1; then
     echo "Compiling asset catalog with actool..."
+    # Use the deployment target from Package.swift (macOS 13) rather than
+    # hardcoding a specific version.  This ensures the asset catalog can be
+    # compiled by any Xcode SDK >= 13 and the named colors resolve at
+    # runtime on all supported macOS versions.
+    ACTOOL_DEPLOYMENT_TARGET="14.0"
     xcrun actool \
         --output-format human-readable-text \
         --notices \
         --warnings \
         --platform macosx \
-        --minimum-deployment-target 26.0 \
+        --minimum-deployment-target "${ACTOOL_DEPLOYMENT_TARGET}" \
         --target-device mac \
         --app-icon AppIcon \
         --output-partial-info-plist "${ACTOOL_PARTIAL_PLIST}" \

@@ -23,12 +23,14 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
 
   /// Code-signing requirement that the connecting process must satisfy.
   ///
-  /// The requirement enforces:
-  /// 1. The process is signed with a valid Apple code signature.
+  /// For Developer ID signed builds the requirement enforces:
+  /// 1. The process is signed with a valid Apple code signature chain.
   /// 2. The signing identifier matches the main app bundle ID.
-  /// 3. For distribution builds, the signing certificate's Team ID
-  ///    matches (prevents a different developer from signing a binary
-  ///    with the same bundle identifier).
+  /// 3. The signing certificate's Team ID matches.
+  ///
+  /// For ad-hoc signed builds the requirement only checks the bundle
+  /// identifier, since ad-hoc signatures lack an Apple-rooted chain and
+  /// cannot satisfy `anchor apple generic`.
   ///
   /// To pin to a specific team for distribution builds, replace the
   /// empty string below with your 10-character Apple Team ID (e.g.
@@ -36,7 +38,38 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
   /// `VMENU_TEAM_ID` build setting and `GCC_PREPROCESSOR_DEFINITIONS`.
   private static let teamID = ""
 
+  /// Detect whether our own binary is ad-hoc signed (no Apple-rooted chain).
+  private static let isSelfAdHocSigned: Bool = {
+    var staticCode: SecStaticCode?
+    guard let executableURL = Bundle.main.executableURL,
+          SecStaticCodeCreateWithPath(
+      executableURL as CFURL, [], &staticCode) == errSecSuccess,
+          let code = staticCode
+    else {
+      return true // Assume ad-hoc if we cannot inspect ourselves.
+    }
+    var signingInfo: CFDictionary?
+    guard SecCodeCopySigningInformation(
+      code, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
+          let info = signingInfo as? [String: Any]
+    else {
+      return true
+    }
+    // kSecCodeSignatureAdhoc = 0x0002
+    if let flags = info[kSecCodeInfoFlags as String] as? UInt32,
+       (flags & 0x0002) != 0 {
+      return true
+    }
+    return false
+  }()
+
   private static let signingRequirement: String = {
+    if isSelfAdHocSigned {
+      // Ad-hoc builds: only verify the bundle identifier.  The ad-hoc
+      // signature cannot satisfy `anchor apple generic` because there
+      // is no Apple-rooted certificate chain.
+      return "identifier \"com.brianshumate.vmenu\""
+    }
     let base = "identifier \"com.brianshumate.vmenu\" and anchor apple generic"
     if !teamID.isEmpty {
       return base + " and certificate leaf[subject.OU] = \"\(teamID)\""
@@ -531,9 +564,14 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
       return false
     }
 
+    // Use 0o644 (owner read-write, group/other read-only) instead of
+    // 0o600.  On macOS 26, launchd's validation may need to read the
+    // plist via the _launchservicesd user.  Standard LaunchAgent plists
+    // are conventionally 644 — the file does not contain secrets (the
+    // Vault token lives in the startup log, not the plist).
     do {
       try FileManager.default.setAttributes(
-        [.posixPermissions: 0o600],
+        [.posixPermissions: 0o644],
         ofItemAtPath: plistURL.path
       )
     } catch {
