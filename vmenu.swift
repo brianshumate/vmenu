@@ -1688,9 +1688,10 @@ class MenuBarVisibilityMonitor {
   private func sendHiddenNotification() {
     guard let center = Self.notificationCenter() else { return }
 
-    // Check authorization status before attempting to send.
-    // If the user has denied permission, log once and skip.
-    center.getNotificationSettings { settings in
+    // Use async API to stay on @MainActor instead of escaping into
+    // a callback on an arbitrary UNUserNotification dispatch queue.
+    Task { @MainActor in
+      let settings = await center.notificationSettings()
       switch settings.authorizationStatus {
       case .denied:
         logger.info(
@@ -1698,8 +1699,6 @@ class MenuBarVisibilityMonitor {
         )
         return
       case .notDetermined:
-        // Permission was never requested (shouldn't happen since we
-        // request at launch, but handle gracefully).
         logger.info("Notification permission not determined — skipping alert")
         return
       default:
@@ -1725,12 +1724,12 @@ class MenuBarVisibilityMonitor {
         trigger: nil
       )
 
-      center.add(request) { error in
-        if let error {
-          logger.error(
-            "Failed to deliver menu bar visibility notification: \(error.localizedDescription, privacy: .public)"
-          )
-        }
+      do {
+        try await center.add(request)
+      } catch {
+        logger.error(
+          "Failed to deliver menu bar visibility notification: \(error.localizedDescription, privacy: .public)"
+        )
       }
     }
   }
@@ -1738,15 +1737,23 @@ class MenuBarVisibilityMonitor {
   func requestNotificationPermission() {
     guard let center = Self.notificationCenter() else { return }
 
-    center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-      if let error {
+    // Use async API to stay on @MainActor instead of escaping into a
+    // callback on UNUserNotificationServiceConnection's dispatch queue.
+    // The callback-based requestAuthorization runs its completion handler
+    // off the main thread, which violates @MainActor isolation on
+    // macOS 26's strict Swift concurrency runtime and causes a crash
+    // (dispatch_assert_queue_fail / EXC_BREAKPOINT).
+    Task { @MainActor in
+      do {
+        let granted = try await center.requestAuthorization(options: [.alert, .sound])
+        if !granted {
+          logger.info(
+            "Notification permission not granted — menu bar visibility alerts will be silent"
+          )
+        }
+      } catch {
         logger.error(
           "Notification permission error: \(error.localizedDescription, privacy: .public)"
-        )
-      }
-      if !granted {
-        logger.info(
-          "Notification permission not granted — menu bar visibility alerts will be silent"
         )
       }
     }

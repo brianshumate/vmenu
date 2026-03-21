@@ -184,23 +184,25 @@ if [ "${SIGN}" = "sign" ]; then
     # Use explicit identifier to match the Mach service name for XPC lookup
     echo "Signing helper with identifier ${HELPER_NAME}..."
     HELPER_PARENT_CONSTRAINT="${SCRIPT_DIR}/vmenuhelper/launch-constraint-parent.plist"
+    HELPER_SELF_CONSTRAINT="${SCRIPT_DIR}/vmenuhelper/launch-constraint-self.plist"
+
+    CONSTRAINT_FLAGS=()
     if [ -f "${HELPER_PARENT_CONSTRAINT}" ]; then
         echo "  (applying parent launch constraint for macOS 26 compatibility)"
-        codesign --force --options runtime \
-            --identifier "${HELPER_NAME}" \
-            --entitlements "${HELPER_ENTITLEMENTS}" \
-            --launch-constraint-parent "${HELPER_PARENT_CONSTRAINT}" \
-            --sign "${IDENTITY}" \
-            --timestamp \
-            "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
-    else
-        codesign --force --options runtime \
-            --identifier "${HELPER_NAME}" \
-            --entitlements "${HELPER_ENTITLEMENTS}" \
-            --sign "${IDENTITY}" \
-            --timestamp \
-            "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+        CONSTRAINT_FLAGS+=(--launch-constraint-parent "${HELPER_PARENT_CONSTRAINT}")
     fi
+    if [ -f "${HELPER_SELF_CONSTRAINT}" ]; then
+        echo "  (applying self launch constraint for macOS 26 compatibility)"
+        CONSTRAINT_FLAGS+=(--launch-constraint-self "${HELPER_SELF_CONSTRAINT}")
+    fi
+
+    codesign --force --options runtime \
+        --identifier "${HELPER_NAME}" \
+        --entitlements "${HELPER_ENTITLEMENTS}" \
+        "${CONSTRAINT_FLAGS[@]}" \
+        --sign "${IDENTITY}" \
+        --timestamp \
+        "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
 
     # Sign main binary with explicit identifier
     echo "Signing main binary..."
