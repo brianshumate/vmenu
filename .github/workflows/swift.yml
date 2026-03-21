@@ -140,25 +140,31 @@ jobs:
           echo "Main app entitlements:"
           codesign -d --entitlements - vmenu.app/Contents/MacOS/vmenu 2>&1 | head -20
 
+          # Extract entitlements as XML plists for reliable parsing.
+          # The human-readable display format puts keys and values on separate
+          # lines, which breaks single-line grep patterns like "app-sandbox.*true".
+          codesign -d --entitlements /tmp/helper-ent.plist vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>/dev/null
+          codesign -d --entitlements /tmp/main-ent.plist vmenu.app/Contents/MacOS/vmenu 2>/dev/null
+
           # Verify helper is NOT sandboxed (required for launchctl operations)
-          HELPER_SANDBOX=$(codesign -d --entitlements - vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep -c "app-sandbox.*true" || true)
-          if [ "$HELPER_SANDBOX" -gt 0 ]; then
+          HELPER_SANDBOX=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" /tmp/helper-ent.plist 2>/dev/null || echo "false")
+          if [ "$HELPER_SANDBOX" = "true" ]; then
             echo "ERROR: Helper should not be sandboxed!"
             exit 1
           fi
           echo "✓ Helper correctly not sandboxed"
 
           # Verify main app IS sandboxed
-          MAIN_SANDBOX=$(codesign -d --entitlements - vmenu.app/Contents/MacOS/vmenu 2>&1 | grep -c "app-sandbox.*true" || true)
-          if [ "$MAIN_SANDBOX" -eq 0 ]; then
-            echo "ERROR: Main app should be sandboxed!"
+          MAIN_SANDBOX=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" /tmp/main-ent.plist 2>/dev/null || echo "false")
+          if [ "$MAIN_SANDBOX" != "true" ]; then
+            echo "ERROR: Main app should be sandboxed! Got sandbox value: '$MAIN_SANDBOX'"
             exit 1
           fi
           echo "✓ Main app correctly sandboxed"
 
           # Verify main app has mach-lookup entitlement for XPC communication
-          MACH_LOOKUP=$(codesign -d --entitlements - vmenu.app/Contents/MacOS/vmenu 2>&1 | grep -c "mach-lookup.global-name" || true)
-          if [ "$MACH_LOOKUP" -eq 0 ]; then
+          MACH_LOOKUP=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.temporary-exception.mach-lookup.global-name" /tmp/main-ent.plist 2>/dev/null || echo "")
+          if [ -z "$MACH_LOOKUP" ]; then
             echo "ERROR: Main app missing mach-lookup entitlement for XPC!"
             exit 1
           fi

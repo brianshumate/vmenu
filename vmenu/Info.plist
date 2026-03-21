@@ -17,9 +17,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.brianshumate.vmenu</string>
     <key>CFBundleVersion</key>
-    <string>1.23</string>
+    <string>1.26</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.23</string>
+    <string>1.26</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSApplicationCategoryType</key>
