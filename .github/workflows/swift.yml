@@ -143,8 +143,10 @@ jobs:
           # Extract entitlements as XML plists for reliable parsing.
           # The human-readable display format puts keys and values on separate
           # lines, which breaks single-line grep patterns like "app-sandbox.*true".
-          codesign -d --entitlements /tmp/helper-ent.plist vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>/dev/null
-          codesign -d --entitlements /tmp/main-ent.plist vmenu.app/Contents/MacOS/vmenu 2>/dev/null
+          # --xml is required: without it codesign writes a binary blob with a
+          # magic header that PlistBuddy cannot read.
+          codesign -d --entitlements /tmp/helper-ent.plist --xml vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>/dev/null
+          codesign -d --entitlements /tmp/main-ent.plist --xml vmenu.app/Contents/MacOS/vmenu 2>/dev/null
 
           # Verify helper is NOT sandboxed (required for launchctl operations)
           HELPER_SANDBOX=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" /tmp/helper-ent.plist 2>/dev/null || echo "false")
