@@ -115,8 +115,8 @@ jobs:
 
           echo ""
           echo "=== Checking identifiers ==="
-          HELPER_ID=$(codesign -dv vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep 'Identifier=' | cut -d= -f2)
-          MAIN_ID=$(codesign -dv vmenu.app/Contents/MacOS/vmenu 2>&1 | grep 'Identifier=' | cut -d= -f2)
+          HELPER_ID=$(codesign -dv vmenu.app/Contents/MacOS/com.brianshumate.vmenu.helper 2>&1 | grep '^Identifier=' | cut -d= -f2)
+          MAIN_ID=$(codesign -dv vmenu.app/Contents/MacOS/vmenu 2>&1 | grep '^Identifier=' | cut -d= -f2)
           echo "Helper identifier: $HELPER_ID"
           echo "Main app identifier: $MAIN_ID"
 
