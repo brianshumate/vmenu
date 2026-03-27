@@ -1227,104 +1227,151 @@ class VaultManager {
   }
 
   func showAboutWindow() {
-    if let existing = aboutWindow {
-      aboutWindow = nil
-      existing.orderOut(nil)
-    }
-
+    // Dismiss the MenuBarExtra popover first, then defer the actual
+    // window presentation to the next run-loop pass.  This avoids a
+    // re-entrant AppKit deadlock: when the user taps "About" inside
+    // the popover, the SwiftUI button action is still on the call
+    // stack.  Calling dismissMenuBarExtra() → performClick()
+    // synchronously triggers the popover's dismiss animation while
+    // the button action hasn't returned yet, freezing the menu.
     dismissMenuBarExtra()
 
-    // Use NSHostingController instead of manually embedding an
-    // NSHostingView.  The controller correctly manages safe-area
-    // inset invalidation during window layout, avoiding the
-    // constraint-engine crash that occurs when an NSHostingView
-    // subview of an NSVisualEffectView triggers
-    // invalidateSafeAreaInsets during the initial display cycle
-    // under fullSizeContentView.
-    let hostingController = NSHostingController(rootView: AboutView())
+    DispatchQueue.main.async { [self] in
+      if let existing = aboutWindow {
+        aboutWindow = nil
+        existing.orderOut(nil)
+      }
 
-    let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 320, height: 300),
-      styleMask: [.titled, .closable],
-      backing: .buffered,
-      defer: false
-    )
-    window.title = String(localized: "About vmenu", comment: "Title for the About window")
-    window.minSize = NSSize(width: 280, height: 260)
-    window.contentViewController = hostingController
-    window.isReleasedWhenClosed = false
-    window.level = .floating
+      // Use NSHostingController instead of manually embedding an
+      // NSHostingView.  The controller correctly manages safe-area
+      // inset invalidation during window layout, avoiding the
+      // constraint-engine crash that occurs when an NSHostingView
+      // subview of an NSVisualEffectView triggers
+      // invalidateSafeAreaInsets during the initial display cycle
+      // under fullSizeContentView.
+      let hostingController = NSHostingController(rootView: AboutView())
 
-    // Force layout so the hosting controller can size the window to
-    // fit its SwiftUI content *before* we center.  Without this,
-    // center() runs against the initial 320×300 contentRect and
-    // SwiftUI resizes the window afterwards, pushing it upward
-    // against the menu bar.
-    window.layoutIfNeeded()
-    window.center()
-    activateApp()
-    window.makeKeyAndOrderFront(nil)
-    // Safety net: ensure the window is visible even if activate()
-    // didn't bring the app to the foreground (LSUIElement apps).
-    window.orderFrontRegardless()
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 320, height: 300),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+      )
+      window.title = String(localized: "About vmenu", comment: "Title for the About window")
+      window.minSize = NSSize(width: 280, height: 260)
+      window.contentViewController = hostingController
+      window.isReleasedWhenClosed = false
+      window.level = .floating
 
-    aboutWindow = window
+      // Ask the SwiftUI hosting controller for the ideal content size
+      // before the window is visible.  sizeThatFits(.zero) returns the
+      // view's intrinsic ideal size, which is more reliable than
+      // layoutIfNeeded() because it runs the SwiftUI layout pass in
+      // full rather than only the AppKit constraint pass.
+      let fittingSize = hostingController.sizeThatFits(in: CGSize(
+        width: CGFloat.greatestFiniteMagnitude,
+        height: CGFloat.greatestFiniteMagnitude
+      ))
+
+      // Determine which screen the pointer is on (most natural choice
+      // for a menu-bar app where the user just clicked a menu item).
+      // Fall back to the main screen, then an arbitrary screen.
+      let targetScreen =
+        NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+        ?? NSScreen.main
+        ?? NSScreen.screens.first
+
+      if let screen = targetScreen {
+        // Convert to window frame (title bar height is included).
+        let contentSize = NSSize(
+          width: max(fittingSize.width, 280),
+          height: max(fittingSize.height, 260)
+        )
+        let frameSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: contentSize))
+
+        // Center within the visible portion of the screen (avoids the
+        // menu bar and Dock rather than centering in the raw screen rect).
+        let visibleFrame = screen.visibleFrame
+        let originX = visibleFrame.midX - frameSize.width / 2
+        let originY = visibleFrame.midY - frameSize.height / 2
+        window.setFrame(
+          NSRect(origin: NSPoint(x: originX, y: originY), size: frameSize.size),
+          display: false
+        )
+      } else {
+        // No screen info available — fall back to AppKit's best guess.
+        window.center()
+      }
+
+      self.activateApp()
+      window.makeKeyAndOrderFront(nil)
+      // Safety net: ensure the window is visible even if activate()
+      // didn't bring the app to the foreground (LSUIElement apps).
+      window.orderFrontRegardless()
+
+      self.aboutWindow = window
+    }
   }
 
   func showStatusWindow() {
-    if let existing = statusWindow {
-      statusWindow = nil
-      existing.orderOut(nil)
-    }
-
+    // Defer to next run-loop pass to avoid re-entrant AppKit deadlock
+    // when called from inside the MenuBarExtra popover (same pattern
+    // as showAboutWindow).
     dismissMenuBarExtra()
 
-    let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 540, height: 580),
-      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-      backing: .buffered,
-      defer: false
-    )
-    window.title = String(
-      localized: "Vault Server Status", comment: "Title for the status detail window")
-    window.minSize = NSSize(width: 400, height: 400)
+    DispatchQueue.main.async { [self] in
+      if let existing = statusWindow {
+        statusWindow = nil
+        existing.orderOut(nil)
+      }
 
-    // Set the NSVisualEffectView as contentView *before* adding the
-    // NSHostingView subview with constraints.  See showAboutWindow()
-    // comment for details on the crash this ordering prevents.
-    let effectView = NSVisualEffectView()
-    effectView.material = .windowBackground
-    effectView.blendingMode = .behindWindow
-    effectView.state = .active
-    window.contentView = effectView
-
-    let rootView: AnyView
-    if let status = parsedStatus {
-      rootView = AnyView(
-        StatusPopoverView(
-          status: status, rawOutput: statusOutput, unsealKey: unsealKey)
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 540, height: 580),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+        backing: .buffered,
+        defer: false
       )
-    } else {
-      rootView = AnyView(StatusErrorView(errorMessage: statusOutput))
+      window.title = String(
+        localized: "Vault Server Status", comment: "Title for the status detail window")
+      window.minSize = NSSize(width: 400, height: 400)
+
+      // Set the NSVisualEffectView as contentView *before* adding the
+      // NSHostingView subview with constraints.  See showAboutWindow()
+      // comment for details on the crash this ordering prevents.
+      let effectView = NSVisualEffectView()
+      effectView.material = .windowBackground
+      effectView.blendingMode = .behindWindow
+      effectView.state = .active
+      window.contentView = effectView
+
+      let rootView: AnyView
+      if let status = self.parsedStatus {
+        rootView = AnyView(
+          StatusPopoverView(
+            status: status, rawOutput: self.statusOutput, unsealKey: self.unsealKey)
+        )
+      } else {
+        rootView = AnyView(StatusErrorView(errorMessage: self.statusOutput))
+      }
+      let hostingView = NSHostingView(rootView: rootView)
+      hostingView.translatesAutoresizingMaskIntoConstraints = false
+      effectView.addSubview(hostingView)
+      NSLayoutConstraint.activate([
+        hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
+        hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
+        hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
+        hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
+      ])
+
+      window.center()
+      window.isReleasedWhenClosed = false
+      window.level = .floating
+      self.activateApp()
+      window.makeKeyAndOrderFront(nil)
+      window.orderFrontRegardless()
+
+      self.statusWindow = window
     }
-    let hostingView = NSHostingView(rootView: rootView)
-    hostingView.translatesAutoresizingMaskIntoConstraints = false
-    effectView.addSubview(hostingView)
-    NSLayoutConstraint.activate([
-      hostingView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
-      hostingView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
-      hostingView.topAnchor.constraint(equalTo: effectView.topAnchor),
-      hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
-    ])
-
-    window.center()
-    window.isReleasedWhenClosed = false
-    window.level = .floating
-    activateApp()
-    window.makeKeyAndOrderFront(nil)
-    window.orderFrontRegardless()
-
-    statusWindow = window
   }
 }
 
