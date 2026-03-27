@@ -615,7 +615,12 @@ struct VaultMenuView: View {
       Text("Vault status: \(label)", comment: "VoiceOver label for the server status badge"))
   }
 
-  private func detailRow(label: String, value: String, icon: String) -> some View {
+}
+
+// MARK: - VaultMenuView Sections
+
+extension VaultMenuView {
+  func detailRow(label: String, value: String, icon: String) -> some View {
     HStack(spacing: 6) {
       Image(systemName: icon)
         .font(.caption2)
@@ -636,7 +641,7 @@ struct VaultMenuView: View {
     }
   }
 
-  private func detailPill(label: String, icon: String) -> some View {
+  func detailPill(label: String, icon: String) -> some View {
     HStack(spacing: 3) {
       Image(systemName: icon)
         .font(.caption2)
@@ -659,7 +664,7 @@ struct VaultMenuView: View {
     )
   }
 
-  private func sealStatusPill(sealed: Bool) -> some View {
+  func sealStatusPill(sealed: Bool) -> some View {
     HStack(spacing: 3) {
       Image(systemName: sealed ? "lock.fill" : "lock.open.fill")
         .font(.caption2)
@@ -695,7 +700,7 @@ struct VaultMenuView: View {
           comment: "Tooltip explaining unsealed state"))
   }
 
-  private var controlSection: some View {
+  var controlSection: some View {
     VStack(spacing: 2) {
       menuButton(
         title: vaultManager.isRunning
@@ -740,7 +745,7 @@ struct VaultMenuView: View {
     .padding(.horizontal, 4)
   }
 
-  private var environmentSection: some View {
+  var environmentSection: some View {
     VStack(spacing: 2) {
       if !vaultManager.vaultAddr.isEmpty {
         envCopyRow(label: "VAULT_ADDR", value: vaultManager.vaultAddr)
@@ -769,7 +774,7 @@ struct VaultMenuView: View {
     .padding(.horizontal, 4)
   }
 
-  private func envCopyRow(label: String, value: String, isSensitive: Bool = false) -> some View {
+  func envCopyRow(label: String, value: String, isSensitive: Bool = false) -> some View {
     EnvCopyRowButton(
       label: label, value: value, isSensitive: isSensitive, copyFeedback: $copyFeedback
     ) {
@@ -782,7 +787,7 @@ struct VaultMenuView: View {
     }
   }
 
-  private var quitSection: some View {
+  var quitSection: some View {
     VStack(spacing: 2) {
       menuButton(
         title: String(
@@ -822,7 +827,7 @@ struct VaultMenuView: View {
     .padding(.horizontal, 4)
   }
 
-  private func menuButton(
+  func menuButton(
     title: String,
     icon: String,
     shortcut: String? = nil,
@@ -830,7 +835,6 @@ struct VaultMenuView: View {
   ) -> some View {
     MenuRowButton(title: title, icon: icon, shortcut: shortcut, action: action)
   }
-
 }
 
 struct AboutView: View {
