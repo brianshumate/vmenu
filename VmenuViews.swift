@@ -322,6 +322,19 @@ struct VaultMenuView: View {
           }
           .buttonStyle(.bordered)
           .controlSize(.small)
+
+          Button(
+            String(
+              localized: "Copy Diagnostics",
+              comment: "Button to copy helper diagnostics to clipboard")
+          ) {
+            vaultManager.runDiagnosticsAndCopy()
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .help(String(
+            localized: "Collect diagnostic info and copy to clipboard for troubleshooting",
+            comment: "Tooltip for diagnostics button"))
         }
       }
       .padding(16)
@@ -336,6 +349,17 @@ struct VaultMenuView: View {
           icon: "info.circle.fill"
         ) {
           VaultManager.shared.showAboutWindow()
+        }
+        // Diagnostic options - only visible when debug mode is enabled
+        if vaultManager.isDebugModeEnabled {
+          menuButton(
+            title: vaultManager.isVerboseLoggingEnabled
+              ? String(localized: "Disable Verbose Logging", comment: "Menu button to disable verbose helper logging")
+              : String(localized: "Enable Verbose Logging", comment: "Menu button to enable verbose helper logging"),
+            icon: "text.magnifyingglass"
+          ) {
+            vaultManager.toggleVerboseLogging()
+          }
         }
         menuButton(
           title: String(
@@ -767,6 +791,24 @@ struct VaultMenuView: View {
       ) {
         VaultManager.shared.showAboutWindow()
       }
+      // Diagnostic options - only visible when debug mode is enabled
+      if vaultManager.isDebugModeEnabled {
+        menuButton(
+          title: vaultManager.isVerboseLoggingEnabled
+            ? String(localized: "Disable Verbose Logging", comment: "Menu button to disable verbose helper logging")
+            : String(localized: "Enable Verbose Logging", comment: "Menu button to enable verbose helper logging"),
+          icon: "text.magnifyingglass"
+        ) {
+          vaultManager.toggleVerboseLogging()
+        }
+        menuButton(
+          title: String(
+            localized: "Copy Diagnostics", comment: "Menu button to copy helper diagnostics to clipboard"),
+          icon: "doc.on.clipboard"
+        ) {
+          vaultManager.runDiagnosticsAndCopy()
+        }
+      }
       menuButton(
         title: String(
           localized: "Quit vmenu", comment: "Menu button to quit the application"),
@@ -801,6 +843,7 @@ struct AboutView: View {
   }()
 
   @ScaledMetric(relativeTo: .title2) private var appIconSize: CGFloat = 64
+  @State private var isDebugModeEnabled: Bool = UserDefaults.standard.bool(forKey: "isDebugModeEnabled")
 
   var body: some View {
     VStack(spacing: 16) {
@@ -855,9 +898,28 @@ struct AboutView: View {
         .tint(Color(nsColor: .linkColor))
       }
 
+      Divider()
+        .padding(.horizontal, 40)
+
+      Toggle(
+        String(localized: "Debug Mode", comment: "Toggle to enable debug mode"),
+        isOn: $isDebugModeEnabled
+      )
+      .toggleStyle(.switch)
+      .controlSize(.small)
+      .font(.caption)
+      .onChange(of: isDebugModeEnabled) { _, newValue in
+        VaultManager.shared.isDebugModeEnabled = newValue
+      }
+      .help(
+        String(
+          localized: "Shows diagnostic menu items like verbose logging and copy diagnostics",
+          comment: "Tooltip for debug mode toggle"))
+
     }
     .padding(24)
-    .frame(minWidth: 280, idealWidth: 320)
+    .frame(minWidth: 280, idealWidth: 320, minHeight: 290, idealHeight: 330)
+    .fixedSize()
   }
 }
 

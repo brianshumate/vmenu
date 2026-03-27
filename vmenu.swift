@@ -174,6 +174,288 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
 
 // MARK: - XPC Client
 
+// MARK: - Helper Diagnostics
+
+/// Thread-safe storage for verbose logging flag.
+/// Using an actor-independent approach so XPCClient can read it without
+/// crossing actor boundaries.
+private final class VerboseLoggingStorage: @unchecked Sendable {
+  private var _enabled = false
+  private let lock = NSLock()
+
+  var enabled: Bool {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return _enabled
+    }
+    set {
+      lock.lock()
+      let oldValue = _enabled
+      _enabled = newValue
+      lock.unlock()
+      if newValue != oldValue {
+        if newValue {
+          logger.info("[DIAG] Verbose helper logging ENABLED")
+        } else {
+          logger.info("[DIAG] Verbose helper logging DISABLED")
+        }
+      }
+    }
+  }
+}
+
+private let verboseLoggingStorage = VerboseLoggingStorage()
+
+/// Collects diagnostic information about the XPC helper for troubleshooting.
+///
+/// Use `HelperDiagnostics.collect()` to gather all relevant diagnostic data,
+/// then inspect `HelperDiagnostics.shared.report` for a human-readable summary
+/// or access individual properties programmatically.
+@MainActor
+final class HelperDiagnostics: @unchecked Sendable {
+  static let shared = HelperDiagnostics()
+
+  /// Whether verbose diagnostic logging is enabled.
+  /// When enabled, XPC operations log detailed debug information to Console.app.
+  /// Toggle via "Diagnose Helper" in the menu or set programmatically.
+  ///
+  /// This property is backed by thread-safe storage so it can be read from
+  /// any isolation context (needed by XPCClient which is not @MainActor).
+  static var verboseLoggingEnabled: Bool {
+    get { verboseLoggingStorage.enabled }
+    set { verboseLoggingStorage.enabled = newValue }
+  }
+
+  // MARK: - Diagnostic Data
+
+  struct DiagnosticReport: Sendable {
+    let timestamp: Date
+    let macOSVersion: String
+    let macOSMajorVersion: Int
+    let appBundlePath: String
+    let appBundleIdentifier: String?
+    let isInApplicationsFolder: Bool
+    let helperBundlePath: String
+    let helperExists: Bool
+    let helperCodeSigningStatus: String
+    let helperTeamID: String?
+    let isAdHocSigned: Bool
+    let smAppServiceStatus: String
+    let xpcConnectionStatus: String
+    let lastXPCError: String?
+    let launchdHelperPlistExists: Bool
+    let suggestedActions: [String]
+
+    var formattedReport: String {
+      var lines: [String] = []
+      lines.append("=== vmenu Helper Diagnostics ===")
+      lines.append("Timestamp: \(ISO8601DateFormatter().string(from: timestamp))")
+      lines.append("")
+      lines.append("--- System ---")
+      lines.append("macOS Version: \(macOSVersion)")
+      lines.append("Stricter Launch Constraints: \(macOSMajorVersion >= 26 ? "Yes (macOS 26+)" : "No")")
+      lines.append("")
+      lines.append("--- App Bundle ---")
+      lines.append("Bundle Path: \(appBundlePath)")
+      lines.append("Bundle ID: \(appBundleIdentifier ?? "nil")")
+      lines.append("In /Applications: \(isInApplicationsFolder ? "✓ Yes" : "✗ No")")
+      lines.append("")
+      lines.append("--- Helper Binary ---")
+      lines.append("Helper Path: \(helperBundlePath)")
+      lines.append("Helper Exists: \(helperExists ? "✓ Yes" : "✗ No")")
+      lines.append("Code Signing: \(helperCodeSigningStatus)")
+      lines.append("Team ID: \(helperTeamID ?? "none (ad-hoc)")")
+      lines.append("Ad-hoc Signed: \(isAdHocSigned ? "Yes" : "No")")
+      lines.append("")
+      lines.append("--- Service Status ---")
+      lines.append("SMAppService Status: \(smAppServiceStatus)")
+      lines.append("XPC Connection: \(xpcConnectionStatus)")
+      if let error = lastXPCError {
+        lines.append("Last XPC Error: \(error)")
+      }
+      lines.append("Embedded LaunchAgent Plist: \(launchdHelperPlistExists ? "✓ Found" : "✗ Not found")")
+      lines.append("")
+      if !suggestedActions.isEmpty {
+        lines.append("--- Suggested Actions ---")
+        for (index, action) in suggestedActions.enumerated() {
+          lines.append("\(index + 1). \(action)")
+        }
+      }
+      return lines.joined(separator: "\n")
+    }
+  }
+
+  private(set) var lastReport: DiagnosticReport?
+  private(set) var lastXPCError: String?
+
+  func recordXPCError(_ error: Error) {
+    let nsError = error as NSError
+    lastXPCError = "domain=\(nsError.domain) code=\(nsError.code) - \(error.localizedDescription)"
+    logger.error("[DIAG] XPC Error recorded: \(self.lastXPCError ?? "unknown", privacy: .public)")
+  }
+
+  /// Collect comprehensive diagnostic information.
+  ///
+  /// This method gathers all relevant data about the helper's state and
+  /// returns a structured report. It also logs key findings to Console.app.
+  func collect() -> DiagnosticReport {
+    logger.info("[DIAG] Collecting helper diagnostics...")
+
+    let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+    let macOSVersionString = "\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
+
+    let bundlePath = Bundle.main.bundlePath
+    let bundleID = Bundle.main.bundleIdentifier
+    let isInApplications = bundlePath.hasPrefix("/Applications/")
+    let helperPath = "\(bundlePath)/Contents/MacOS/com.brianshumate.vmenu.helper"
+    let helperExists = FileManager.default.fileExists(atPath: helperPath)
+
+    // Check helper code signing
+    var codeSigningStatus = "Unknown"
+    var teamID: String?
+    var isAdHoc = false
+
+    if helperExists {
+      var staticCode: SecStaticCode?
+      let url = URL(fileURLWithPath: helperPath)
+      let createStatus = SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode)
+
+      if createStatus == errSecSuccess, let code = staticCode {
+        var signingInfo: CFDictionary?
+        let infoStatus = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo)
+
+        if infoStatus == errSecSuccess, let info = signingInfo as? [String: Any] {
+          if let identifier = info[kSecCodeInfoIdentifier as String] as? String {
+            codeSigningStatus = "Signed (id: \(identifier))"
+          }
+          teamID = info[kSecCodeInfoTeamIdentifier as String] as? String
+          if let flags = info[kSecCodeInfoFlags as String] as? UInt32 {
+            isAdHoc = (flags & 0x0002) != 0
+            if isAdHoc {
+              codeSigningStatus += " [ad-hoc]"
+            }
+          }
+        } else {
+          codeSigningStatus = "Error reading signing info (status: \(infoStatus))"
+        }
+      } else {
+        codeSigningStatus = "Error creating static code (status: \(createStatus))"
+      }
+    } else {
+      codeSigningStatus = "Helper binary not found"
+    }
+
+    // Check SMAppService status
+    let smStatus = HelperAgentManager.statusDescription
+
+    // Check XPC connection status
+    let xpcStatus: String
+    if XPCClient.shared.hasActiveConnection {
+      xpcStatus = "Active"
+    } else {
+      xpcStatus = "Not connected"
+    }
+
+    // Check launchd plist (embedded in app bundle for SMAppService.agent)
+    let embeddedPlistPath = "\(bundlePath)/Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist"
+    let plistExists = FileManager.default.fileExists(atPath: embeddedPlistPath)
+
+    // Build suggested actions
+    var actions: [String] = []
+
+    if !isInApplications && osVersion.majorVersion >= 26 {
+      actions.append("Move vmenu.app to /Applications (required on macOS 26+ for ad-hoc signed helpers)")
+    }
+
+    if !helperExists {
+      actions.append("Helper binary missing — reinstall vmenu")
+    }
+
+    if isAdHoc && osVersion.majorVersion >= 26 {
+      actions.append("For development: run 'sudo systemextensionsctl developer on'")
+      actions.append("For production: sign with Developer ID")
+    }
+
+    if smStatus.contains("requires approval") {
+      actions.append("Open System Settings > General > Login Items and enable vmenu")
+    }
+
+    if smStatus.contains("not registered") {
+      actions.append("Try quitting and relaunching vmenu")
+    }
+
+    if lastXPCError != nil {
+      actions.append("Check Console.app for 'com.brianshumate.vmenu' entries")
+      actions.append("Look for 'Launch Constraint Violation' errors")
+    }
+
+    let report = DiagnosticReport(
+      timestamp: Date(),
+      macOSVersion: macOSVersionString,
+      macOSMajorVersion: osVersion.majorVersion,
+      appBundlePath: bundlePath,
+      appBundleIdentifier: bundleID,
+      isInApplicationsFolder: isInApplications,
+      helperBundlePath: helperPath,
+      helperExists: helperExists,
+      helperCodeSigningStatus: codeSigningStatus,
+      helperTeamID: teamID,
+      isAdHocSigned: isAdHoc,
+      smAppServiceStatus: smStatus,
+      xpcConnectionStatus: xpcStatus,
+      lastXPCError: lastXPCError,
+      launchdHelperPlistExists: plistExists,
+      suggestedActions: actions
+    )
+
+    lastReport = report
+
+    // Log key findings
+    logger.info("[DIAG] macOS: \(macOSVersionString), In /Applications: \(isInApplications), Helper exists: \(helperExists)")
+    logger.info("[DIAG] SMAppService: \(smStatus, privacy: .public), Ad-hoc: \(isAdHoc)")
+    if !actions.isEmpty {
+      logger.warning("[DIAG] Suggested actions: \(actions.joined(separator: "; "), privacy: .public)")
+    }
+
+    return report
+  }
+
+  /// Run diagnostics and copy the report to the clipboard.
+  func collectAndCopyToClipboard() {
+    let report = collect()
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(report.formattedReport, forType: .string)
+    logger.info("[DIAG] Diagnostic report copied to clipboard")
+  }
+
+  /// Check if launchd knows about the helper service.
+  ///
+  /// Uses `launchctl print` to check if the service is registered in the
+  /// current user's GUI domain.
+  func checkLaunchdServiceStatus() -> (registered: Bool, output: String) {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    let uid = getuid()
+    task.arguments = ["print", "gui/\(uid)/com.brianshumate.vmenu.helper"]
+
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = pipe
+
+    do {
+      try task.run()
+      task.waitUntilExit()
+      let data = pipe.fileHandleForReading.readDataToEndOfFile()
+      let output = String(data: data, encoding: .utf8) ?? ""
+      let registered = task.terminationStatus == 0
+      return (registered, output)
+    } catch {
+      return (false, "Failed to run launchctl: \(error.localizedDescription)")
+    }
+  }
+}
+
 /// Manages the connection to the out-of-sandbox XPC helper agent.
 ///
 /// The helper agent (`com.brianshumate.vmenu.helper`) is registered via
@@ -195,9 +477,17 @@ final class XPCClient: @unchecked Sendable {
 
   private var connection: NSXPCConnection?
 
-  /// Debug flag to enable verbose XPC logging.
-  /// Set to true to diagnose connection issues.
-  private let debugLogging = false
+  /// Whether verbose XPC logging is enabled.
+  /// Reads from thread-safe storage for runtime toggling.
+  private var debugLogging: Bool {
+    verboseLoggingStorage.enabled
+  }
+
+  /// Whether there's an active (non-nil) XPC connection.
+  /// Used by diagnostics to report connection state.
+  var hasActiveConnection: Bool {
+    connectionQueue.sync { connection != nil }
+  }
 
   /// Tracks consecutive XPC failures to trigger recovery.
   private var consecutiveFailures = 0
@@ -347,6 +637,10 @@ final class XPCClient: @unchecked Sendable {
       logger.info("[XPC-DEBUG] Getting remote object proxy...")
     }
     let proxy = conn.remoteObjectProxyWithErrorHandler { [weak self] error in
+      // Always record errors in diagnostics for later inspection
+      Task { @MainActor in
+        HelperDiagnostics.shared.recordXPCError(error)
+      }
       if self?.debugLogging == true {
         let nsError = error as NSError
         logger.error("[XPC-DEBUG] XPC proxy error: domain=\(nsError.domain) code=\(nsError.code) - \(error.localizedDescription, privacy: .public)")
@@ -879,6 +1173,45 @@ func registerHelperAgent() {
   HelperAgentManager.register()
 }
 
+// MARK: - Window Delegate
+
+/// Handles window lifecycle events for the About and Status windows.
+///
+/// On macOS 26, LSUIElement menu-bar apps that switch to `.accessory`
+/// activation policy to bring a window to front must revert to
+/// `.accessory` (or `.prohibited`) after the window closes, otherwise
+/// the MenuBarExtra's click handling can become desynchronized.
+///
+/// This delegate also clears the owning `VaultManager`'s window reference
+/// so the next "About" / "Status" action creates a fresh window instead
+/// of trying to reuse a deallocated one.
+class VaultWindowDelegate: NSObject, NSWindowDelegate {
+  func windowWillClose(_ notification: Notification) {
+    guard let window = notification.object as? NSWindow else { return }
+
+    // Clear the VaultManager reference that corresponds to this window.
+    let manager = VaultManager.shared
+    if window === manager.aboutWindow {
+      manager.aboutWindow = nil
+    } else if window === manager.statusWindow {
+      manager.statusWindow = nil
+    }
+
+    // If no managed windows remain visible, restore the activation
+    // policy so the MenuBarExtra's internal toggle state stays in sync
+    // and the app doesn't linger in the Dock on macOS 26.
+    let hasVisibleWindows =
+      (manager.aboutWindow?.isVisible == true)
+      || (manager.statusWindow?.isVisible == true)
+
+    if !hasVisibleWindows {
+      // Revert to accessory — the app has no Dock icon but is still
+      // eligible for activation when the user clicks the menu bar icon.
+      NSApp.setActivationPolicy(.accessory)
+    }
+  }
+}
+
 // MARK: - VaultManager
 
 @MainActor
@@ -903,6 +1236,14 @@ class VaultManager {
   /// Detailed message about why the helper is unavailable.
   var helperUnavailableReason: String = ""
 
+  /// Whether debug mode is enabled (shows diagnostic menu items).
+  /// Stored in UserDefaults and toggleable from the About window.
+  var isDebugModeEnabled: Bool = UserDefaults.standard.bool(forKey: "isDebugModeEnabled") {
+    didSet {
+      UserDefaults.standard.set(isDebugModeEnabled, forKey: "isDebugModeEnabled")
+    }
+  }
+
   /// HTTP client for direct Vault API calls (replaces `vault status` process
   /// spawning).  Reused across polling cycles so the underlying URLSession
   /// connection pool stays warm.
@@ -914,6 +1255,10 @@ class VaultManager {
   /// Window references for status and about panels.
   var statusWindow: NSWindow?
   var aboutWindow: NSWindow?
+
+  /// Delegate that observes window close events so we can clean up
+  /// references and restore the activation policy for this LSUIElement app.
+  private let windowDelegate = VaultWindowDelegate()
 
   /// Is Vault sealed?
   var isSealed: Bool {
@@ -1096,6 +1441,33 @@ class VaultManager {
     HelperAgentManager.openLoginItemsSettings()
   }
 
+  /// Run comprehensive helper diagnostics and copy results to clipboard.
+  ///
+  /// Call this when troubleshooting helper connectivity issues. The report
+  /// includes system info, code signing status, SMAppService state, and
+  /// suggested remediation steps.
+  func runDiagnosticsAndCopy() {
+    HelperDiagnostics.shared.collectAndCopyToClipboard()
+  }
+
+  /// Toggle verbose diagnostic logging.
+  ///
+  /// When enabled, XPC operations log detailed debug information that can
+  /// be viewed in Console.app by filtering for "com.brianshumate.vmenu".
+  func toggleVerboseLogging() {
+    HelperDiagnostics.verboseLoggingEnabled.toggle()
+  }
+
+  /// Whether verbose helper logging is currently enabled.
+  var isVerboseLoggingEnabled: Bool {
+    HelperDiagnostics.verboseLoggingEnabled
+  }
+
+  /// Get the last diagnostic report, if any.
+  var lastDiagnosticReport: HelperDiagnostics.DiagnosticReport? {
+    HelperDiagnostics.shared.lastReport
+  }
+
   /// Background timer that periodically checks whether Vault is running.
   func startPolling(interval: TimeInterval = 10) {
     guard pollingTimer == nil else { return }
@@ -1227,16 +1599,15 @@ class VaultManager {
   }
 
   func showAboutWindow() {
-    // Dismiss the MenuBarExtra popover first, then defer the actual
-    // window presentation to the next run-loop pass.  This avoids a
-    // re-entrant AppKit deadlock: when the user taps "About" inside
-    // the popover, the SwiftUI button action is still on the call
-    // stack.  Calling dismissMenuBarExtra() → performClick()
-    // synchronously triggers the popover's dismiss animation while
-    // the button action hasn't returned yet, freezing the menu.
-    dismissMenuBarExtra()
-
+    // Defer everything — including the MenuBarExtra dismissal — to the
+    // next run-loop pass.  On macOS 26, dismissMenuBarExtra() calls
+    // performClick(nil) on the NSStatusBarButton, which re-enters
+    // AppKit's event handling while the SwiftUI button action is still
+    // on the call stack.  Deferring the entire sequence avoids the
+    // re-entrant crash/deadlock.
     DispatchQueue.main.async { [self] in
+      dismissMenuBarExtra()
+
       if let existing = aboutWindow {
         aboutWindow = nil
         existing.orderOut(nil)
@@ -1262,16 +1633,22 @@ class VaultManager {
       window.contentViewController = hostingController
       window.isReleasedWhenClosed = false
       window.level = .floating
+      window.delegate = self.windowDelegate
 
       // Ask the SwiftUI hosting controller for the ideal content size
-      // before the window is visible.  sizeThatFits(.zero) returns the
-      // view's intrinsic ideal size, which is more reliable than
-      // layoutIfNeeded() because it runs the SwiftUI layout pass in
-      // full rather than only the AppKit constraint pass.
-      let fittingSize = hostingController.sizeThatFits(in: CGSize(
-        width: CGFloat.greatestFiniteMagnitude,
-        height: CGFloat.greatestFiniteMagnitude
-      ))
+      // before the window is visible.  sizeThatFits returns the view's
+      // intrinsic ideal size.  Pass a large but finite proposal; using
+      // .greatestFiniteMagnitude can return infinity for views that
+      // don't constrain themselves, which causes setFrame to crash.
+      // If the result is still infinite or NaN, fall back to the
+      // window's minSize.
+      var fittingSize = hostingController.sizeThatFits(in: CGSize(width: 10000, height: 10000))
+      if !fittingSize.width.isFinite || fittingSize.width <= 0 {
+        fittingSize.width = window.minSize.width
+      }
+      if !fittingSize.height.isFinite || fittingSize.height <= 0 {
+        fittingSize.height = window.minSize.height
+      }
 
       // Determine which screen the pointer is on (most natural choice
       // for a menu-bar app where the user just clicked a menu item).
@@ -1314,12 +1691,11 @@ class VaultManager {
   }
 
   func showStatusWindow() {
-    // Defer to next run-loop pass to avoid re-entrant AppKit deadlock
-    // when called from inside the MenuBarExtra popover (same pattern
-    // as showAboutWindow).
-    dismissMenuBarExtra()
-
+    // Defer everything to the next run-loop pass (same pattern as
+    // showAboutWindow) to avoid re-entrant AppKit crashes on macOS 26.
     DispatchQueue.main.async { [self] in
+      dismissMenuBarExtra()
+
       if let existing = statusWindow {
         statusWindow = nil
         existing.orderOut(nil)
@@ -1363,9 +1739,26 @@ class VaultManager {
         hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
       ])
 
-      window.center()
+      // Center on the screen where the pointer is located (same approach
+      // as showAboutWindow) so the window appears predictably.
+      let targetScreen =
+        NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+        ?? NSScreen.main
+        ?? NSScreen.screens.first
+
+      if let screen = targetScreen {
+        let visibleFrame = screen.visibleFrame
+        let windowFrame = window.frame
+        let originX = visibleFrame.midX - windowFrame.width / 2
+        let originY = visibleFrame.midY - windowFrame.height / 2
+        window.setFrameOrigin(NSPoint(x: originX, y: originY))
+      } else {
+        window.center()
+      }
+
       window.isReleasedWhenClosed = false
       window.level = .floating
+      window.delegate = self.windowDelegate
       self.activateApp()
       window.makeKeyAndOrderFront(nil)
       window.orderFrontRegardless()
