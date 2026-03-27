@@ -3,18 +3,20 @@
 <!--
   Launch Constraint (Self) for vmenu helper
 
-  This constraint requires that the launching process has passed
-  basic validation (validation-category 1 = validated).
+  This constraint requires that the helper binary itself is signed by the
+  vmenu team (ZY2BN8SN9F). This validates the helper's own code signature
+  at launch time.
 
-  On macOS 26 (Tahoe), without explicit launch constraints, ad-hoc
-  signed helpers spawned by launchd fail with "Launch Constraint Violation".
+  On macOS 26 (Tahoe), Developer ID signed binaries with launch constraints
+  must have valid self-constraints that can be evaluated against the binary
+  being launched.
 
-  Using validation-category: 1 means "the launching process must be validated"
-  which includes launchd (a system process).
+  Note: validation-category applies to the PARENT process, not self.
+  For self constraints, use team-identifier to verify the binary's signature.
 -->
 <plist version="1.0">
 <dict>
-    <key>validation-category</key>
-    <integer>1</integer>
+    <key>team-identifier</key>
+    <string>ZY2BN8SN9F</string>
 </dict>
 </plist>
