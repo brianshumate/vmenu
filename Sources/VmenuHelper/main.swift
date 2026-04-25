@@ -21,24 +21,13 @@ private let logger = Logger(subsystem: "com.brianshumate.vmenu.helper", category
 /// file I/O, token/key access) simply by knowing the Mach service name.
 final class HelperDelegate: NSObject, NSXPCListenerDelegate {
 
-  /// Code-signing requirement that the connecting process must satisfy.
-  ///
-  /// For Developer ID signed builds the requirement enforces:
-  /// 1. The process is signed with a valid Apple code signature chain.
-  /// 2. The signing identifier matches the main app bundle ID.
-  /// 3. The signing certificate's Team ID matches.
-  ///
-  /// For ad-hoc signed builds the requirement only checks the bundle
-  /// identifier, since ad-hoc signatures lack an Apple-rooted chain and
-  /// cannot satisfy `anchor apple generic`.
-  ///
-  /// To pin to a specific team for distribution builds, replace the
-  /// empty string below with your 10-character Apple Team ID (e.g.
-  /// "A1B2C3D4E5").  The Xcode project can inject this via a
-  /// `VMENU_TEAM_ID` build setting and `GCC_PREPROCESSOR_DEFINITIONS`.
-  private static let teamID = ""
+  // Apple Developer Team ID — pinned so no other Developer ID cert can satisfy the requirement.
+  private static let teamID = "ZY2BN8SN9F"
 
-  /// Detect whether our own binary is ad-hoc signed (no Apple-rooted chain).
+#if DEBUG
+  // Ad-hoc detection is only needed in debug builds where the developer may not
+  // have a signing identity configured.  Release builds always require the full
+  // anchor + Team ID requirement and must never ship with identifier-only trust.
   private static let isSelfAdHocSigned: Bool = {
     var staticCode: SecStaticCode?
     guard let executableURL = Bundle.main.executableURL,
@@ -46,7 +35,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
       executableURL as CFURL, [], &staticCode) == errSecSuccess,
           let code = staticCode
     else {
-      return true // Assume ad-hoc if we cannot inspect ourselves.
+      return true
     }
     var signingInfo: CFDictionary?
     guard SecCodeCopySigningInformation(
@@ -62,19 +51,19 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
     }
     return false
   }()
+#endif
 
   private static let signingRequirement: String = {
+#if DEBUG
     if isSelfAdHocSigned {
-      // Ad-hoc builds: only verify the bundle identifier.  The ad-hoc
-      // signature cannot satisfy `anchor apple generic` because there
-      // is no Apple-rooted certificate chain.
+      // Debug-only fallback: identifier-only is acceptable for local dev builds
+      // that lack an Apple-rooted signing chain.  This path is compiled out of
+      // release builds entirely.
       return "identifier \"com.brianshumate.vmenu\""
     }
-    let base = "identifier \"com.brianshumate.vmenu\" and anchor apple generic"
-    if !teamID.isEmpty {
-      return base + " and certificate leaf[subject.OU] = \"\(teamID)\""
-    }
-    return base
+#endif
+    return "identifier \"com.brianshumate.vmenu\" and anchor apple generic" +
+           " and certificate leaf[subject.OU] = \"\(teamID)\""
   }()
 
   func listener(
@@ -154,10 +143,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
         if SecCodeCopySigningInformation(staticCodeRef, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
            let info = signingInfo as? [String: Any] {
           if let identifier = info[kSecCodeInfoIdentifier as String] {
-            logger.error("[HELPER-XPC] Connecting process identifier: \(String(describing: identifier), privacy: .public)")
+            logger.error("[HELPER-XPC] Connecting process identifier: \(String(describing: identifier), privacy: .private)")
           }
           if let teamID = info[kSecCodeInfoTeamIdentifier as String] {
-            logger.error("[HELPER-XPC] Connecting process team ID: \(String(describing: teamID), privacy: .public)")
+            logger.error("[HELPER-XPC] Connecting process team ID: \(String(describing: teamID), privacy: .private)")
           }
         }
       }
@@ -732,10 +721,10 @@ logger.info("[HELPER-STARTUP] Mach service name: \(vmenuHelperMachServiceName)")
 
 // Log bundle and code signing info for debugging
 if let bundlePath = Bundle.main.bundlePath as String? {
-  logger.info("[HELPER-STARTUP] Bundle path: \(bundlePath, privacy: .public)")
+  logger.info("[HELPER-STARTUP] Bundle path: \(bundlePath, privacy: .private)")
 }
 if let bundleID = Bundle.main.bundleIdentifier {
-  logger.info("[HELPER-STARTUP] Bundle identifier: \(bundleID, privacy: .public)")
+  logger.info("[HELPER-STARTUP] Bundle identifier: \(bundleID, privacy: .private)")
 } else {
   logger.warning("[HELPER-STARTUP] No bundle identifier found - this may cause XPC issues on macOS 26")
 }

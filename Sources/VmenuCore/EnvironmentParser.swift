@@ -20,27 +20,51 @@ public struct VaultEnvironment: Equatable {
   }
 }
 
-/// Validate that a VAULT_ADDR value points to a loopback address.
+private let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
+
+/// Validate and normalize a VAULT_ADDR string.
 ///
-/// In dev mode, Vault always listens on localhost (127.0.0.1 or ::1).
-/// Accepting a non-loopback address from the startup log would indicate
-/// either a configuration error or injected content from an attacker
-/// attempting to redirect the client to a malicious Vault server.
+/// Returns a clean `scheme://host` or `scheme://host:port` string
+/// reconstructed from the parsed URL components — scheme, host, and port
+/// only. Path, query, and fragment from the original string are discarded,
+/// so URLs built by appending API paths later can never be polluted by
+/// extra components that slipped through validation.
 ///
-/// Accepts URLs of the form `http(s)://127.0.0.1:PORT`,
-/// `http(s)://localhost:PORT`, or `http(s)://[::1]:PORT`.
-public func isLoopbackVaultAddr(_ addr: String) -> Bool {
+/// Returns `nil` if the addr is not a loopback http/https URL.
+public func normalizedLoopbackVaultAddr(_ addr: String) -> String? {
   guard let url = URL(string: addr),
         let scheme = url.scheme?.lowercased(),
         scheme == "http" || scheme == "https",
-        let host = url.host?.lowercased()
+        let host = url.host?.lowercased(),
+        loopbackHosts.contains(host)
   else {
-    return false
+    return nil
   }
-  let loopbackHosts: Set<String> = [
-    "127.0.0.1", "localhost", "::1"
-  ]
-  return loopbackHosts.contains(host)
+  // Initialize from the already-parsed URL so URLComponents inherits
+  // the correct internal representation (including IPv6 brackets), then
+  // strip everything except scheme, host, and port.
+  // Do not reassign `host` — URLComponents initialized from a URL with
+  // "[::1]" carries the bracket form internally; setting host = "::1"
+  // (the bare value URL.host returns) drops the brackets and breaks
+  // the IPv6 URL string.
+  guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+    return nil
+  }
+  components.scheme = scheme   // normalize case (e.g. HTTPS → https)
+  components.path = ""
+  components.query = nil
+  components.fragment = nil
+  components.user = nil
+  components.password = nil
+  return components.string
+}
+
+/// Returns true when `addr` is a loopback http/https URL.
+///
+/// Delegates to ``normalizedLoopbackVaultAddr(_:)`` so validation logic
+/// lives in one place.
+public func isLoopbackVaultAddr(_ addr: String) -> Bool {
+  normalizedLoopbackVaultAddr(addr) != nil
 }
 
 /// Maximum accepted length for a Vault token or unseal key.
@@ -104,6 +128,14 @@ public func isValidVaultUnsealKey(_ key: String) -> Bool {
 /// The root token is extracted from the `Root Token:` line that Vault prints
 /// during dev-mode startup (there is no `export VAULT_TOKEN=` line in the
 /// log).
+///
+/// Matching rules:
+/// - Each pattern is anchored at the start of the line (after stripping
+///   leading whitespace) so that commented examples or prose that contains
+///   the keyword as a substring are ignored.
+/// - Values are trimmed with `.whitespacesAndNewlines` unioned with quote
+///   characters so that CRLF line endings, surrounding shell quotes, and
+///   stray whitespace are all stripped in one pass.
 public func parseEnvironmentVariables(from content: String) -> VaultEnvironment {
   var result = VaultEnvironment()
   let lines = content.components(separatedBy: .newlines)
@@ -112,41 +144,41 @@ public func parseEnvironmentVariables(from content: String) -> VaultEnvironment 
   var foundToken = false
   var foundUnsealKey = false
 
+  let quotesAndWhitespace = CharacterSet(charactersIn: "\"'").union(.whitespacesAndNewlines)
+
   for line in lines.reversed() {
-    if !foundAddr, line.contains("export VAULT_ADDR=") {
-      if let range = line.range(of: "export VAULT_ADDR=") {
-        let addr = String(line[range.upperBound...])
-        result.vaultAddr = addr.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\n"))
+    let stripped = line.trimmingCharacters(in: .whitespaces)
+
+    if !foundAddr, stripped.hasPrefix("export VAULT_ADDR=") {
+      let value = String(stripped.dropFirst("export VAULT_ADDR=".count))
+        .trimmingCharacters(in: quotesAndWhitespace)
+      if !value.isEmpty {
+        result.vaultAddr = value
         foundAddr = true
       }
     }
-    if !foundCACert, line.contains("export VAULT_CACERT=") {
-      if let range = line.range(of: "export VAULT_CACERT=") {
-        let cert = String(line[range.upperBound...])
-        result.vaultCACert = cert.trimmingCharacters(
-          in: CharacterSet(charactersIn: "\"'\n")
-        )
+    if !foundCACert, stripped.hasPrefix("export VAULT_CACERT=") {
+      let value = String(stripped.dropFirst("export VAULT_CACERT=".count))
+        .trimmingCharacters(in: quotesAndWhitespace)
+      if !value.isEmpty {
+        result.vaultCACert = value
         foundCACert = true
       }
     }
-    if !foundToken, line.contains("Root Token:") {
-      if let range = line.range(of: "Root Token:") {
-        let token = String(line[range.upperBound...])
-          .trimmingCharacters(in: .whitespaces)
-        if !token.isEmpty {
-          result.vaultToken = token
-          foundToken = true
-        }
+    if !foundToken, stripped.hasPrefix("Root Token:") {
+      let token = String(stripped.dropFirst("Root Token:".count))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !token.isEmpty {
+        result.vaultToken = token
+        foundToken = true
       }
     }
-    if !foundUnsealKey, line.contains("Unseal Key:") {
-      if let range = line.range(of: "Unseal Key:") {
-        let key = String(line[range.upperBound...])
-          .trimmingCharacters(in: .whitespaces)
-        if !key.isEmpty {
-          result.unsealKey = key
-          foundUnsealKey = true
-        }
+    if !foundUnsealKey, stripped.hasPrefix("Unseal Key:") {
+      let key = String(stripped.dropFirst("Unseal Key:".count))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !key.isEmpty {
+        result.unsealKey = key
+        foundUnsealKey = true
       }
     }
     if foundAddr && foundCACert && foundToken && foundUnsealKey { break }

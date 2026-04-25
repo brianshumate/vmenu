@@ -870,7 +870,7 @@ struct AboutView: View {
       }
 
       Text(
-        "A macOS menu bar app for Vault.",
+        "A macOS menu bar app for Vault dev mode.",
         comment: "Short app description in the About window"
       )
       .font(.caption)
@@ -882,24 +882,28 @@ struct AboutView: View {
         .padding(.horizontal, 40)
 
       VStack(spacing: 4) {
-        Text("Made with ❤️ and 🤖 by [Brian Shumate](https://brianshumate.com/)")
+        HStack(spacing: 0) {
+          Text("Made with ❤️ and 🤖 by ")
+            .font(.caption)
+            .fontWeight(.medium)
+            .foregroundStyle(.primary)
+          Button("Brian Shumate") {
+            if let url = URL(string: "https://brianshumate.com/") {
+              NSWorkspace.shared.open(url)
+            }
+          }
+          .buttonStyle(.link)
           .font(.caption)
           .fontWeight(.medium)
-          .foregroundStyle(.primary)
-          .tint(Color(nsColor: .linkColor))
+        }
 
-        Button(
-          String(
-            localized: "GitHub Repository", comment: "Link to the project's GitHub page"
-          )
-        ) {
+        Button(String(localized: "GitHub Repository", comment: "Link to the project's GitHub page")) {
           if let url = URL(string: "https://github.com/brianshumate/vmenu") {
             NSWorkspace.shared.open(url)
           }
         }
         .buttonStyle(.link)
         .font(.caption)
-        .tint(Color(nsColor: .linkColor))
       }
 
       Divider()

@@ -184,6 +184,63 @@ final class EnvironmentParserTests: XCTestCase {
     XCTAssertEqual(env.unsealKey, "")
   }
 
+  func testCommentedExportLineIsIgnored() {
+    // A commented example later in the log must not win over the real export.
+    let log = """
+    # example: export VAULT_ADDR=http://attacker/
+      export VAULT_ADDR='https://127.0.0.1:8200'
+    Root Token: root
+    """
+    let env = parseEnvironmentVariables(from: log)
+    XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
+  }
+
+  func testInlineExportInProseIsIgnored() {
+    // "export VAULT_ADDR=" appearing mid-line must not match.
+    let log = """
+    You may need to set export VAULT_ADDR=http://attacker/ in your shell.
+      export VAULT_ADDR='https://127.0.0.1:8200'
+    Root Token: root
+    """
+    let env = parseEnvironmentVariables(from: log)
+    XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
+  }
+
+  func testRootTokenInProseIsIgnored() {
+    // "Root Token:" appearing in explanatory prose must not match.
+    let log = """
+    The Root Token: is printed below for convenience.
+    Root Token: hvs.realtoken
+    """
+    let env = parseEnvironmentVariables(from: log)
+    XCTAssertEqual(env.vaultToken, "hvs.realtoken")
+  }
+
+  func testUnsealKeyInProseIsIgnored() {
+    let log = """
+    Keep the Unseal Key: somewhere safe.
+    Unseal Key: GDz8cL2gACZJAByboalN3e0BFpqAmwNCJ3Tve5Evac0=
+    """
+    let env = parseEnvironmentVariables(from: log)
+    XCTAssertEqual(env.unsealKey, "GDz8cL2gACZJAByboalN3e0BFpqAmwNCJ3Tve5Evac0=")
+  }
+
+  func testCRLFLineEndingsAreStripped() {
+    // \r must not survive into the parsed vaultAddr.
+    let log = "export VAULT_ADDR='https://127.0.0.1:8200'\r\nRoot Token: root\r\n"
+    let env = parseEnvironmentVariables(from: log)
+    XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
+    XCTAssertEqual(env.vaultToken, "root")
+    XCTAssertFalse(env.vaultAddr.contains("\r"))
+    XCTAssertFalse(env.vaultToken.contains("\r"))
+  }
+
+  func testLeadingWhitespaceOnExportIsAccepted() {
+    let log = "    export VAULT_ADDR='https://127.0.0.1:8200'"
+    let env = parseEnvironmentVariables(from: log)
+    XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
+  }
+
   func testExportWithEmptyValue() {
     let log = """
       export VAULT_ADDR=
@@ -318,6 +375,67 @@ final class EnvironmentParserTests: XCTestCase {
 
   func testNonLoopback192168() {
     XCTAssertFalse(isLoopbackVaultAddr("https://192.168.1.1:8200"))
+  }
+
+  // MARK: - normalizedLoopbackVaultAddr tests
+
+  func testNormalizedStripsQuery() {
+    XCTAssertEqual(
+      normalizedLoopbackVaultAddr("http://127.0.0.1:8200?x=1"),
+      "http://127.0.0.1:8200"
+    )
+  }
+
+  func testNormalizedStripsFragment() {
+    XCTAssertEqual(
+      normalizedLoopbackVaultAddr("https://localhost:8200#section"),
+      "https://localhost:8200"
+    )
+  }
+
+  func testNormalizedStripsPath() {
+    XCTAssertEqual(
+      normalizedLoopbackVaultAddr("https://127.0.0.1:8200/extra/path"),
+      "https://127.0.0.1:8200"
+    )
+  }
+
+  func testNormalizedStripsQueryAndFragment() {
+    XCTAssertEqual(
+      normalizedLoopbackVaultAddr("http://127.0.0.1:8200?x=1#frag"),
+      "http://127.0.0.1:8200"
+    )
+  }
+
+  func testNormalizedPreservesPort() {
+    XCTAssertEqual(
+      normalizedLoopbackVaultAddr("https://127.0.0.1:8200"),
+      "https://127.0.0.1:8200"
+    )
+  }
+
+  func testNormalizedIPv6() {
+    XCTAssertEqual(
+      normalizedLoopbackVaultAddr("https://[::1]:8200"),
+      "https://[::1]:8200"
+    )
+  }
+
+  func testNormalizedNilForNonLoopback() {
+    XCTAssertNil(normalizedLoopbackVaultAddr("https://evil.example.com:8200"))
+  }
+
+  func testNormalizedNilForNonLoopbackIP() {
+    XCTAssertNil(normalizedLoopbackVaultAddr("https://10.0.1.50:8200"))
+  }
+
+  func testNormalizedNilForEmpty() {
+    XCTAssertNil(normalizedLoopbackVaultAddr(""))
+  }
+
+  func testNormalizedNormalizesSchemeCase() {
+    let result = normalizedLoopbackVaultAddr("HTTPS://127.0.0.1:8200")
+    XCTAssertTrue(result?.hasPrefix("https://") == true)
   }
 
   // MARK: - isValidVaultToken tests
