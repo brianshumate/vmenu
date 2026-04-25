@@ -115,7 +115,7 @@ final class HelperDiagnostics: @unchecked Sendable {
   func recordXPCError(_ error: Error) {
     let nsError = error as NSError
     lastXPCError = "domain=\(nsError.domain) code=\(nsError.code) - \(error.localizedDescription)"
-    logger.error("[DIAG] XPC Error recorded: \(self.lastXPCError ?? "unknown", privacy: .public)")
+    logger.error("[DIAG] XPC Error recorded: \(self.lastXPCError ?? "unknown", privacy: .private)")
   }
 
   // MARK: - Helper Code Signing Check
@@ -276,9 +276,9 @@ final class HelperDiagnostics: @unchecked Sendable {
 
     // Log key findings
     logger.info("[DIAG] macOS: \(macOSVersionString), In /Applications: \(isInApplications), Helper exists: \(helperExists)")
-    logger.info("[DIAG] SMAppService: \(smStatus, privacy: .public), Ad-hoc: \(codeSigningResult.isAdHoc)")
+    logger.info("[DIAG] SMAppService: \(smStatus, privacy: .private), Ad-hoc: \(codeSigningResult.isAdHoc)")
     if !actions.isEmpty {
-      logger.warning("[DIAG] Suggested actions: \(actions.joined(separator: "; "), privacy: .public)")
+      logger.warning("[DIAG] Suggested actions: \(actions.joined(separator: "; "), privacy: .private)")
     }
 
     return report

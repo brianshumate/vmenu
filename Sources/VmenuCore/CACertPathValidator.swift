@@ -9,6 +9,24 @@ private let unsafeDirectoryPrefixes: [String] = [
   "/private/var/tmp"
 ]
 
+/// Returns the Darwin per-user temporary directory, guaranteed to end with "/".
+///
+/// Vault dev-mode always writes its CA certificate under this directory
+/// (e.g. `/var/folders/xx/yyyy/T/`). Using `confstr(_CS_DARWIN_USER_TEMP_DIR)`
+/// rather than `$TMPDIR` avoids environment-variable spoofing.
+func darwinUserTempDir() -> String {
+  var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+  let byteCount = confstr(_CS_DARWIN_USER_TEMP_DIR, &buf, buf.count)
+  let dir: String
+  if byteCount > 0 {
+    let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+    dir = String(bytes: bytes, encoding: .utf8) ?? NSTemporaryDirectory()
+  } else {
+    dir = NSTemporaryDirectory()
+  }
+  return dir.hasSuffix("/") ? dir : dir + "/"
+}
+
 /// Maximum CA certificate file size (1 MiB).
 ///
 /// PEM-encoded CA bundles are typically under 10 KiB.  A generous upper
@@ -50,6 +68,15 @@ public func validateCACertPath(_ path: String) -> Bool {
     if resolvedPath == prefix || resolvedPath.hasPrefix(prefix + "/") {
       return false
     }
+  }
+
+  // 2b. Require the path to be under the Darwin per-user temp dir.
+  // Vault dev-mode exclusively writes its CA cert there; accepting any
+  // path outside this prefix turns the XPC API into an unrestricted
+  // file-read for whatever the sandboxed app requests.
+  let allowedPrefix = darwinUserTempDir()
+  guard resolvedPath.hasPrefix(allowedPrefix) else {
+    return false
   }
 
   // 3 & 4. lstat the original path (not resolved) to detect symlinks.
@@ -149,6 +176,11 @@ public func safeReadCACertData(_ path: String) -> Data? {
     if resolvedPath == prefix || resolvedPath.hasPrefix(prefix + "/") {
       return nil
     }
+  }
+
+  let allowedPrefix = darwinUserTempDir()
+  guard resolvedPath.hasPrefix(allowedPrefix) else {
+    return nil
   }
 
   // 2. Open with O_NOFOLLOW — fails with ELOOP if path is a symlink,

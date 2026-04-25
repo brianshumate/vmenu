@@ -44,7 +44,10 @@ let package = Package(
     .executableTarget(
       name: "vmenu-helper",
       dependencies: ["VmenuCore", "VmenuXPCProtocol"],
-      path: "Sources/VmenuHelper"
+      path: "Sources/VmenuHelper",
+      swiftSettings: [
+        .define("DEBUG", .when(configuration: .debug))
+      ]
     ),
     .testTarget(
       name: "VmenuCoreTests",

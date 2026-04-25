@@ -46,12 +46,21 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
   /// trust evaluation.
   var caCertData: Data?
 
+  /// Cancel in-flight requests and break the session–delegate retain cycle.
+  ///
+  /// Must be called on app termination before the delegate (self) is torn
+  /// down, so that a late-arriving response cannot call back into a
+  /// partially deallocated object.
+  func invalidate() {
+    session.invalidateAndCancel()
+  }
+
   /// Fetch seal status from the Vault HTTP API.
   ///
   /// Calls `GET /v1/sys/seal-status` (unauthenticated) and decodes the
   /// JSON response into a `SealStatusResponse`.
   func fetchSealStatus(addr: String) async throws -> SealStatusResponse {
-    guard let url = URL(string: "\(addr)/v1/sys/seal-status") else {
+    guard let url = vaultURL(addr, path: "/v1/sys/seal-status") else {
       throw URLError(.badURL)
     }
     let (data, _) = try await session.data(from: url)
@@ -64,11 +73,22 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
   /// response.  Used to obtain `ha_enabled`, which the seal-status
   /// endpoint does not include.
   func fetchLeader(addr: String) async throws -> LeaderResponse {
-    guard let url = URL(string: "\(addr)/v1/sys/leader") else {
+    guard let url = vaultURL(addr, path: "/v1/sys/leader") else {
       throw URLError(.badURL)
     }
     let (data, _) = try await session.data(from: url)
     return try JSONDecoder().decode(LeaderResponse.self, from: data)
+  }
+
+  /// Build a Vault API URL by setting `path` on a parsed `URLComponents`
+  /// of `addr`, rather than string-concatenating, so any residual query
+  /// or fragment components cannot pollute the resulting URL.
+  private func vaultURL(_ addr: String, path: String) -> URL? {
+    guard var components = URLComponents(string: addr) else { return nil }
+    components.path = path
+    components.query = nil
+    components.fragment = nil
+    return components.url
   }
 
   /// Fetch complete Vault status by combining seal-status and leader
@@ -132,13 +152,14 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
       return
     }
 
-    guard let cert = loadCertificate(from: certData) else {
+    let certs = loadCertificates(from: certData)
+    guard !certs.isEmpty else {
       logger.warning("Failed to load CA certificate — rejecting TLS challenge")
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
 
-    SecTrustSetAnchorCertificates(serverTrust, [cert] as CFArray)
+    SecTrustSetAnchorCertificates(serverTrust, certs as CFArray)
     SecTrustSetAnchorCertificatesOnly(serverTrust, true)
 
     var error: CFError?
@@ -151,24 +172,40 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
 
   // MARK: - Certificate Loading
 
-  /// Load a DER or PEM certificate from raw data.
-  private func loadCertificate(from data: Data) -> SecCertificate? {
-    // Try DER first.
+  /// Load all DER or PEM certificates from raw data.
+  ///
+  /// Handles single-cert DER, single-cert PEM, and multi-cert PEM bundles
+  /// (chains with intermediates). Each PEM block is decoded independently so
+  /// a bundle never produces invalid DER by concatenating multiple payloads.
+  private func loadCertificates(from data: Data) -> [SecCertificate] {
+    // Try DER first (no PEM envelope — single cert only).
     if let cert = SecCertificateCreateWithData(nil, data as CFData) {
-      return cert
+      return [cert]
     }
-    // Try PEM: strip header/footer and base64-decode.
-    if let pemString = String(data: data, encoding: .utf8) {
-      let base64 =
-        pemString
-        .components(separatedBy: "\n")
-        .filter { !$0.hasPrefix("-----") }
-        .joined()
-      if let derData = Data(base64Encoded: base64) {
-        return SecCertificateCreateWithData(nil, derData as CFData)
+    // Parse PEM: split on BEGIN/END boundaries, decode each block separately.
+    guard let pemString = String(data: data, encoding: .utf8) else {
+      return []
+    }
+    var certs: [SecCertificate] = []
+    var base64Lines: [String] = []
+    var inBlock = false
+    for line in pemString.components(separatedBy: "\n") {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed == "-----BEGIN CERTIFICATE-----" {
+        inBlock = true
+        base64Lines = []
+      } else if trimmed == "-----END CERTIFICATE-----" {
+        inBlock = false
+        if let derData = Data(base64Encoded: base64Lines.joined()),
+           let cert = SecCertificateCreateWithData(nil, derData as CFData) {
+          certs.append(cert)
+        }
+        base64Lines = []
+      } else if inBlock, !trimmed.isEmpty {
+        base64Lines.append(trimmed)
       }
     }
-    return nil
+    return certs
   }
 }
 
@@ -393,13 +430,22 @@ final class XPCClient: @unchecked Sendable {
 
   /// Check if the helper agent is healthy by making a simple XPC call.
   ///
-  /// Returns `true` if the helper responds, `false` otherwise.
+  /// Returns `true` only if the helper actually responds within the timeout.
+  /// A timeout returns `false` — the previous `return true` was incorrect.
   func healthCheck() async -> Bool {
-    // Use findVaultPath as a lightweight ping — it always returns a result.
-    _ = await findVaultPath()
-    // Even if vault is not installed, a non-nil connection means healthy.
-    // The key is whether the XPC call completed without error.
-    return true  // If we get here, the call succeeded.
+    let result: XPCResult<String?> = await withXPCTimeoutResult { reply in
+      guard let helper = self.proxy() else { reply(nil); return }
+      helper.findVaultPath(withReply: reply)
+    }
+    switch result {
+    case .success:
+      recordSuccess()
+      return true
+    case .timeout:
+      logger.warning("XPC healthCheck timed out — helper unreachable")
+      Task { await recordFailureAndRecover() }
+      return false
+    }
   }
 
   /// Ensure the helper is reachable, attempting recovery if needed.
@@ -428,29 +474,7 @@ final class XPCClient: @unchecked Sendable {
       try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
-    // Try a simple XPC call with a timeout.
-    let reachable = await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        // Actual health check.
-        _ = await self.findVaultPath()
-        return true
-      }
-      group.addTask {
-        // Timeout after 2 seconds.
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        return false
-      }
-
-      // First result wins.
-      if let result = await group.next() {
-        group.cancelAll()
-        return result
-      }
-      return false
-    }
-
-    if reachable {
-      recordSuccess()
+    if await healthCheck() {
       return true
     }
 
@@ -462,32 +486,13 @@ final class XPCClient: @unchecked Sendable {
     // due to more thorough process validation).
     try? await Task.sleep(nanoseconds: 750_000_000)
 
-    // Try again.
-    let secondAttempt = await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        _ = await self.findVaultPath()
-        return true
-      }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        return false
-      }
-
-      if let result = await group.next() {
-        group.cancelAll()
-        return result
-      }
-      return false
-    }
-
-    if secondAttempt {
-      recordSuccess()
+    let recovered = await healthCheck()
+    if recovered {
       logger.info("Helper recovered successfully")
     } else {
       logger.error("Helper recovery failed — XPC operations will fail")
     }
-
-    return secondAttempt
+    return recovered
   }
 
   // MARK: - Async wrappers
@@ -506,11 +511,10 @@ final class XPCClient: @unchecked Sendable {
   /// On macOS 26, XPC calls can hang if the helper process is in a bad
   /// state. This wrapper ensures we don't block indefinitely and properly
   /// track failures for recovery.
-  private func withXPCTimeout<T: Sendable>(
-    defaultValue: T,
+  private func withXPCTimeoutResult<T: Sendable>(
     operation: @escaping @Sendable (@escaping (T) -> Void) -> Void
-  ) async -> T {
-    let result = await withTaskGroup(of: XPCResult<T>.self) { group in
+  ) async -> XPCResult<T> {
+    await withTaskGroup(of: XPCResult<T>.self) { group in
       group.addTask {
         let value = await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
           operation { value in
@@ -519,12 +523,10 @@ final class XPCClient: @unchecked Sendable {
         }
         return XPCResult.success(value)
       }
-
       group.addTask {
         try? await Task.sleep(nanoseconds: Self.xpcTimeout)
         return XPCResult<T>.timeout
       }
-
       // First result wins.
       if let result = await group.next() {
         group.cancelAll()
@@ -532,13 +534,19 @@ final class XPCClient: @unchecked Sendable {
       }
       return .timeout
     }
+  }
 
-    switch result {
+  private func withXPCTimeout<T: Sendable>(
+    defaultValue: T,
+    operation: @escaping @Sendable (@escaping (T) -> Void) -> Void
+  ) async -> T {
+    switch await withXPCTimeoutResult(operation: operation) {
     case .success(let value):
       recordSuccess()
       return value
     case .timeout:
-      logger.warning("XPC call timed out after \(Self.xpcTimeout / 1_000_000_000)s — scheduling recovery")
+      logger.warning("XPC call timed out after \(Self.xpcTimeout / 1_000_000_000)s — invalidating connection and scheduling recovery")
+      resetConnection()
       Task { await recordFailureAndRecover() }
       return defaultValue
     }
@@ -724,8 +732,8 @@ enum HelperAgentManager {
     }
     let helperPath = "\(bundlePath)/Contents/MacOS/com.brianshumate.vmenu.helper"
 
-    logger.info("[HELPER-DIAG] Bundle path: \(bundlePath, privacy: .public)")
-    logger.info("[HELPER-DIAG] Helper path: \(helperPath, privacy: .public)")
+    logger.info("[HELPER-DIAG] Bundle path: \(bundlePath, privacy: .private)")
+    logger.info("[HELPER-DIAG] Helper path: \(helperPath, privacy: .private)")
 
     // Check if running from /Applications (required on macOS 26 for ad-hoc signed apps)
     let isInApplications = bundlePath.hasPrefix("/Applications/")
@@ -733,7 +741,7 @@ enum HelperAgentManager {
       logger.info("[HELPER-DIAG] App is in /Applications ✓")
     } else {
       logger.warning("[HELPER-DIAG] App is NOT in /Applications - helper may fail launch constraints")
-      logger.warning("[HELPER-DIAG] Current location: \(bundlePath, privacy: .public)")
+      logger.warning("[HELPER-DIAG] Current location: \(bundlePath, privacy: .private)")
       logger.warning("[HELPER-DIAG] Please move to /Applications for proper operation on macOS 26")
     }
 
@@ -764,10 +772,10 @@ enum HelperAgentManager {
     let infoStatus = SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo)
     if infoStatus == errSecSuccess, let info = signingInfo as? [String: Any] {
       if let identifier = info[kSecCodeInfoIdentifier as String] as? String {
-        logger.info("[HELPER-DIAG] Code signing identifier: \(identifier, privacy: .public)")
+        logger.info("[HELPER-DIAG] Code signing identifier: \(identifier, privacy: .private)")
       }
       if let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String {
-        logger.info("[HELPER-DIAG] Team identifier: \(teamID, privacy: .public)")
+        logger.info("[HELPER-DIAG] Team identifier: \(teamID, privacy: .private)")
       } else {
         logger.warning("[HELPER-DIAG] No team identifier (ad-hoc signed)")
       }
@@ -1262,6 +1270,7 @@ class VaultManager {
     pollingTimer = nil
     statusRefreshTimer?.invalidate()
     statusRefreshTimer = nil
+    httpClient.invalidate()
   }
 
   /// Dismiss the MenuBarExtra popover so the status-bar icon remains
@@ -1621,10 +1630,13 @@ extension VaultManager {
 
     let env = VmenuCore.parseEnvironmentVariables(from: content)
 
-    // Validate VAULT_ADDR points to a loopback address.
+    // Validate VAULT_ADDR and store the normalized form.
+    // normalizedLoopbackVaultAddr rebuilds from scheme/host/port only,
+    // so any query parameters or fragments in the parsed log line cannot
+    // survive into URLs constructed later.
     if !env.vaultAddr.isEmpty {
-      if isLoopbackVaultAddr(env.vaultAddr) {
-        vaultAddr = env.vaultAddr
+      if let normalized = normalizedLoopbackVaultAddr(env.vaultAddr) {
+        vaultAddr = normalized
       } else {
         logger.warning(
           "Ignoring non-loopback VAULT_ADDR: \(env.vaultAddr, privacy: .private)")
