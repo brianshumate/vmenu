@@ -68,4 +68,6 @@ vmenu.app/
 dist/
 
 # agent tooling
+.claude
 .pi/
+AGENTS.md
