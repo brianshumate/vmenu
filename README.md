@@ -101,7 +101,7 @@ swift build -c release
 Build and ad-hoc sign a full .app bundle (includes the XPC helper)
 
 ```shell
-./build-app.sh release
+./scripts/build-app.sh release
 ```
 
 Copy app to `/Applications` folder.
@@ -111,7 +111,7 @@ cp -r vmenu.app /Applications/
 ```
 
 > [!NOTE]
-> The XPC helper agent (`com.brianshumate.vmenu.helper`) requires a properly assembled `.app` bundle so that `SMAppService` can find its LaunchAgent plist at `Contents/Library/LaunchAgents/`. Use `./build-app.sh` to produce a complete bundle.
+> The XPC helper agent (`com.brianshumate.vmenu.helper`) requires a properly assembled `.app` bundle so that `SMAppService` can find its LaunchAgent plist at `Contents/Library/LaunchAgents/`. Use `./scripts/build-app.sh` to produce a complete bundle.
 
 ## Run tests
 
@@ -127,14 +127,14 @@ swift test
 Build with the first "Developer ID Application" identity in your keychain.
 
 ```shell
-./build-app.sh release sign
+./scripts/build-app.sh release sign
 ```
 
 Build and explicitly specify an identity.
 
 ```shell
 export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"; \
-./build-app.sh release sign
+./scripts/build-app.sh release sign
 ```
 
 The build script signs both the XPC helper and the main binary with the same identity. The helper is signed first (inner component before outer bundle) with its own entitlements (`vmenuhelper/vmenuhelper.entitlements`).

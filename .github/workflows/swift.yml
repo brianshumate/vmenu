@@ -98,7 +98,7 @@ jobs:
             echo "Found identity hash: $HASH"
             export CODESIGN_IDENTITY="$HASH"
           fi
-          ./build-app.sh release sign
+          ./scripts/build-app.sh release sign
 
       - name: Verify code signatures
         run: |
