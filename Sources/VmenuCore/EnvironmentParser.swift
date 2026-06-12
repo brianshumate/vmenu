@@ -55,11 +55,14 @@ private let maxSecretValueLength = 512
 
 /// Validate that a Vault root token contains only safe characters.
 ///
-/// Vault tokens consist of printable ASCII characters — specifically
-/// alphanumerics, dots, hyphens, and underscores (the `s.` / `hvs.`
-/// prefixes use dots).  This rejects control characters, whitespace,
-/// shell metacharacters, and non-ASCII bytes that could indicate
-/// injected or corrupted log content.
+/// Vault tokens consist of alphanumerics, dots, hyphens, and underscores
+/// (the `s.` / `hvs.` / `hvb.` prefixes use dots).  Restricting to this
+/// alphabet rejects control characters, whitespace, shell metacharacters
+/// (`;`, `|`, `$`, backticks, quotes, …), and non-ASCII bytes that could
+/// indicate injected or corrupted log content.  Although the token is only
+/// displayed and copied today, the tight alphabet documents intent and
+/// removes a latent footgun should the value ever be interpolated into a
+/// command.
 ///
 /// Accepted formats:
 /// - Dev-mode literal: `root`
@@ -70,12 +73,10 @@ public func isValidVaultToken(_ token: String) -> Bool {
   guard !token.isEmpty, token.count <= maxSecretValueLength else {
     return false
   }
-  // Only printable ASCII (0x21–0x7E) — excludes control chars, space,
-  // and DEL.  Vault tokens use a subset of this (alphanumeric + '.' + '-')
-  // but we allow the full printable range for forward-compatibility.
+  // Vault token alphabet: A-Z, a-z, 0-9, '.', '_', '-'.
   return token.allSatisfy { char in
-    guard let ascii = char.asciiValue else { return false }
-    return ascii >= 0x21 && ascii <= 0x7E
+    char.isASCII
+      && (char.isLetter || char.isNumber || char == "." || char == "_" || char == "-")
   }
 }
 

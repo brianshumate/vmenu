@@ -31,20 +31,68 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
   /// the custom TLS trust evaluation is used for every request.
   private lazy var session: URLSession = {
     let config = URLSessionConfiguration.ephemeral
-    config.timeoutIntervalForRequest = 5
-    config.timeoutIntervalForResource = 5
+    config.timeoutIntervalForRequest = 10
+    config.timeoutIntervalForResource = 10
     return URLSession(configuration: config, delegate: self, delegateQueue: nil)
   }()
 
+  /// Serializes access to the mutable certificate state below.
+  ///
+  /// These fields are written from the `@MainActor` (when environment
+  /// variables are parsed) and read on the `URLSession` delegate queue (a
+  /// background queue) during TLS challenges.  Without synchronization that
+  /// is a genuine cross-thread data race; the lock makes every get/set
+  /// atomic.  Same pattern as `VerboseLoggingStorage`.
+  private let stateLock = NSLock()
+  private var _caCertPath = ""
+  private var _caCertData: Data?
+  private var _cachedCertificate: SecCertificate?
+
   /// Path to the CA certificate PEM file (from `VAULT_CACERT`).
   /// Updated by the caller whenever the environment variables are parsed.
-  var caCertPath: String = ""
+  var caCertPath: String {
+    get {
+      stateLock.lock()
+      defer { stateLock.unlock() }
+      return _caCertPath
+    }
+    set {
+      stateLock.lock()
+      defer { stateLock.unlock() }
+      _caCertPath = newValue
+    }
+  }
 
   /// CA certificate data cached from the helper.
   /// The sandboxed app cannot read arbitrary filesystem paths, so the helper
   /// reads the CA cert file and passes the raw data back over XPC for TLS
-  /// trust evaluation.
-  var caCertData: Data?
+  /// trust evaluation.  Setting this property also parses and caches the
+  /// SecCertificate so TLS challenges reuse the parsed object.
+  var caCertData: Data? {
+    get {
+      stateLock.lock()
+      defer { stateLock.unlock() }
+      return _caCertData
+    }
+    set {
+      // Parse outside the lock — `loadCertificate` is pure and the DER/PEM
+      // decode shouldn't block other accessors.
+      let parsed = newValue.flatMap { loadCertificate(from: $0) }
+      stateLock.lock()
+      defer { stateLock.unlock() }
+      _caCertData = newValue
+      _cachedCertificate = parsed
+    }
+  }
+
+  /// Atomic snapshot of the certificate state for the TLS challenge handler,
+  /// so the "has data" check and the parsed certificate cannot be torn apart
+  /// by a concurrent write on the main actor.
+  private func certificateState() -> (hasData: Bool, certificate: SecCertificate?) {
+    stateLock.lock()
+    defer { stateLock.unlock() }
+    return (_caCertData != nil, _cachedCertificate)
+  }
 
   /// Fetch seal status from the Vault HTTP API.
   ///
@@ -123,16 +171,21 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
       return
     }
 
+    // Snapshot the certificate state atomically so a concurrent update on
+    // the main actor cannot tear the "has data" check apart from the parsed
+    // certificate read.
+    let (hasData, cachedCert) = certificateState()
+
     // When no CA cert data is available, fail closed: reject the
     // connection rather than falling through to the system trust store.
     // Vault dev-mode TLS certs are not in the system store, so this
     // prevents silent fallback that could mask configuration errors.
-    guard let certData = caCertData, !certData.isEmpty else {
+    guard hasData else {
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
 
-    guard let cert = loadCertificate(from: certData) else {
+    guard let cert = cachedCert else {
       logger.warning("Failed to load CA certificate — rejecting TLS challenge")
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
@@ -216,13 +269,6 @@ final class XPCClient: @unchecked Sendable {
   /// Prevents concurrent recovery attempts.
   private var isRecovering = false
 
-  /// Timestamp of last successful XPC call for staleness detection.
-  private var lastSuccessfulCall: Date?
-
-  /// Maximum age of a connection before we proactively refresh it.
-  /// macOS 26 can invalidate idle connections more aggressively.
-  private let connectionMaxAge: TimeInterval = 60
-
   /// Serial queue protecting `connection`.
   ///
   /// Replaces the previous `NSLock`-based approach.  `NSLock` is not
@@ -234,28 +280,18 @@ final class XPCClient: @unchecked Sendable {
 
   /// Obtain (or create) the XPC connection to the helper.
   ///
-  /// On macOS 26, we proactively refresh connections that have been idle
-  /// for longer than `connectionMaxAge` to avoid using stale connections
-  /// that launchd may have invalidated server-side.
+  /// The invalidation and interruption handlers already clear `connection`
+  /// when the helper dies or is interrupted, so `getConnection()` creates a
+  /// new connection on demand.  Age-based proactive refresh is omitted: it
+  /// forced reconnects during steady use and the handlers are the reliable
+  /// source of truth for stale connections.
   private func getConnection() -> NSXPCConnection {
     connectionQueue.sync {
-      // Check if we have an existing connection that might be stale.
       if let existing = connection {
-        // On macOS 26, proactively refresh idle connections to avoid
-        // using connections that launchd may have invalidated.
-        if let lastCall = lastSuccessfulCall,
-           Date().timeIntervalSince(lastCall) > connectionMaxAge {
-          if debugLogging {
-            logger.info("[XPC-DEBUG] Refreshing idle XPC connection (age: \(Date().timeIntervalSince(lastCall))s)")
-          }
-          existing.invalidate()
-          connection = nil
-        } else {
-          if debugLogging {
-            logger.info("[XPC-DEBUG] Reusing existing connection")
-          }
-          return existing
+        if debugLogging {
+          logger.info("[XPC-DEBUG] Reusing existing connection")
         }
+        return existing
       }
 
       if debugLogging {
@@ -306,7 +342,6 @@ final class XPCClient: @unchecked Sendable {
     connectionQueue.sync {
       connection?.invalidate()
       connection = nil
-      lastSuccessfulCall = nil
     }
   }
 
@@ -314,7 +349,6 @@ final class XPCClient: @unchecked Sendable {
   private func recordSuccess() {
     connectionQueue.sync {
       consecutiveFailures = 0
-      lastSuccessfulCall = Date()
     }
   }
 
@@ -387,19 +421,7 @@ final class XPCClient: @unchecked Sendable {
     connectionQueue.sync {
       connection?.invalidate()
       connection = nil
-      lastSuccessfulCall = nil
     }
-  }
-
-  /// Check if the helper agent is healthy by making a simple XPC call.
-  ///
-  /// Returns `true` if the helper responds, `false` otherwise.
-  func healthCheck() async -> Bool {
-    // Use findVaultPath as a lightweight ping — it always returns a result.
-    _ = await findVaultPath()
-    // Even if vault is not installed, a non-nil connection means healthy.
-    // The key is whether the XPC call completed without error.
-    return true  // If we get here, the call succeeded.
   }
 
   /// Ensure the helper is reachable, attempting recovery if needed.
@@ -501,36 +523,52 @@ final class XPCClient: @unchecked Sendable {
     case timeout
   }
 
+  /// One-shot latch that lets exactly one of two racing paths (the XPC reply
+  /// or the timeout) resume the shared continuation.  The loser's later call
+  /// is a safe no-op, which both prevents a fatal double-resume and ensures
+  /// the continuation is never leaked when the timeout wins.
+  private final class XPCResumeLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+    /// Returns `true` to the first caller only.
+    func claim() -> Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      if claimed { return false }
+      claimed = true
+      return true
+    }
+  }
+
   /// Wrapper that adds timeout and error tracking to XPC calls.
   ///
   /// On macOS 26, XPC calls can hang if the helper process is in a bad
   /// state. This wrapper ensures we don't block indefinitely and properly
   /// track failures for recovery.
+  ///
+  /// A single continuation is resumed by whichever of the reply or the
+  /// timeout fires first (guarded by `XPCResumeLatch`).  If the timeout wins
+  /// and the helper later replies — or never replies — there is no leaked
+  /// continuation and no double-resume, because the latch rejects the second
+  /// caller.
   private func withXPCTimeout<T: Sendable>(
     defaultValue: T,
     operation: @escaping @Sendable (@escaping (T) -> Void) -> Void
   ) async -> T {
-    let result = await withTaskGroup(of: XPCResult<T>.self) { group in
-      group.addTask {
-        let value = await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
-          operation { value in
-            continuation.resume(returning: value)
-          }
-        }
-        return XPCResult.success(value)
-      }
-
-      group.addTask {
+    let latch = XPCResumeLatch()
+    let result: XPCResult<T> = await withCheckedContinuation { continuation in
+      let timeoutTask = Task {
         try? await Task.sleep(nanoseconds: Self.xpcTimeout)
-        return XPCResult<T>.timeout
+        if latch.claim() {
+          continuation.resume(returning: .timeout)
+        }
       }
-
-      // First result wins.
-      if let result = await group.next() {
-        group.cancelAll()
-        return result
+      operation { value in
+        if latch.claim() {
+          timeoutTask.cancel()
+          continuation.resume(returning: .success(value))
+        }
       }
-      return .timeout
     }
 
     switch result {
@@ -547,7 +585,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `findVaultPath`.
   func findVaultPath() async -> String? {
     await withXPCTimeout(defaultValue: nil) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(nil) }) else {
         reply(nil)
         return
       }
@@ -558,7 +596,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `createOrUpdatePlist`.
   func createOrUpdatePlist() async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -569,7 +607,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `bootstrapService`.
   func bootstrapService() async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -580,7 +618,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `bootoutService`.
   func bootoutService() async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -591,7 +629,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `kickstartService`.
   func kickstartService() async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -602,7 +640,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `checkServiceStatus`.
   func checkServiceStatus() async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -613,7 +651,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `readStartupLog`.
   func readStartupLog() async -> String? {
     await withXPCTimeout(defaultValue: nil) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(nil) }) else {
         reply(nil)
         return
       }
@@ -624,7 +662,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `recreateStartupLog`.
   func recreateStartupLog() async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -635,7 +673,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `readCACertData`.
   func readCACertData(atPath path: String) async -> Data? {
     await withXPCTimeout(defaultValue: nil) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(nil) }) else {
         reply(nil)
         return
       }
@@ -646,7 +684,7 @@ final class XPCClient: @unchecked Sendable {
   /// Async wrapper around `removeCACertFile`.
   func removeCACertFile(atPath path: String) async -> Bool {
     await withXPCTimeout(defaultValue: false) { reply in
-      guard let helper = self.proxy() else {
+      guard let helper = self.proxy(errorHandler: { _ in reply(false) }) else {
         reply(false)
         return
       }
@@ -913,6 +951,8 @@ class VaultWindowDelegate: NSObject, NSWindowDelegate {
       manager.aboutWindow = nil
     } else if window === manager.statusWindow {
       manager.statusWindow = nil
+      // Balance the fast-refresh consumer registered in showStatusWindow().
+      manager.endFastRefresh()
     }
 
     // If no managed windows remain visible, restore the activation
@@ -942,7 +982,7 @@ class VaultManager {
   var vaultCACert = ""
   var vaultToken = ""
   var unsealKey = ""
-  var isVaultAvailable = true
+  var isVaultAvailable = false
   var statusOutput = ""
   var parsedStatus: VaultStatus?
   var isRefreshing = false
@@ -978,10 +1018,32 @@ class VaultManager {
   /// references and restore the activation policy for this LSUIElement app.
   private let windowDelegate = VaultWindowDelegate()
 
+  /// Three-state seal status.
+  ///
+  /// Distinguishes "not yet known" (status hasn't loaded) from "sealed" so
+  /// callers don't silently treat an unloaded status as sealed.  Prefer this
+  /// over `isSealed` in any new code that isn't already gated on `isRunning`.
+  enum SealState {
+    case sealed
+    case unsealed
+    case unknown
+  }
+
+  /// Current seal state derived from the parsed status, or `.unknown` when
+  /// no status has been fetched yet.
+  var sealState: SealState {
+    guard let status = parsedStatus else { return .unknown }
+    return status.sealed == "false" ? .unsealed : .sealed
+  }
+
   /// Is Vault sealed?
+  ///
+  /// Treats `.unknown` as sealed for the benefit of callers that have
+  /// already established the server is running (e.g. `displayState`).
+  /// New code that needs to handle the not-yet-loaded case should use
+  /// `sealState` instead.
   var isSealed: Bool {
-    guard let status = parsedStatus else { return true }
-    return status.sealed != "false"
+    sealState != .unsealed
   }
 
   private var hasPerformedInitialCheck = false
@@ -1065,10 +1127,11 @@ class VaultManager {
             """,
           comment: "Error message when helper requires user approval"
         )
-        logger.warning("Helper requires approval — prompting user")
-        // Open System Settings automatically to reduce friction for
-        // standard users who may not know where to find this.
-        HelperAgentManager.openLoginItemsSettings()
+        logger.warning("Helper requires approval — showing in-app banner")
+        // Don't auto-open System Settings; the in-app banner already
+        // explains what to do and provides an explicit button.  Jumping
+        // to System Settings without user intent violates HIG guidance
+        // for permission flows and surprises first-launch users.
         // Don't return — let the background polling pick up approval.
       }
 
@@ -1217,7 +1280,6 @@ class VaultManager {
           self.isRunning = running
           if running {
             await self.parseEnvironmentVariables()
-            self.refreshStatus()
           } else {
             _ = await self.xpc.removeCACertFile(atPath: self.vaultCACert)
             self.vaultAddr = ""
@@ -1229,16 +1291,59 @@ class VaultManager {
             self.httpClient.caCertPath = ""
           }
         }
+
+        // Refresh seal status each cycle while running so the menu-bar icon
+        // stays current even when no UI is open.  This 10-second cadence
+        // replaces the old always-on 5-second fast poll; the faster cadence
+        // now runs only while a UI surface is visible (see fast-refresh
+        // consumers below).
+        if self.isRunning {
+          self.refreshStatus()
+        }
       }
     }
+  }
 
-    startStatusRefreshPolling()
+  // MARK: - Fast (UI-visible) refresh
+
+  /// Number of visible UI surfaces (the menu popover and the status window)
+  /// that want the faster 5-second refresh cadence.  When zero, the
+  /// 10-second `pollingTimer` alone keeps the menu-bar icon current, which
+  /// avoids needless wakeups, network traffic, and JSON decoding while
+  /// nothing is on screen.
+  private var fastRefreshConsumers = 0
+
+  /// Register a visible UI surface that wants frequent status updates and
+  /// trigger an immediate refresh so the surface opens with fresh data.
+  func beginFastRefresh() {
+    fastRefreshConsumers += 1
+    if isRunning, isVaultAvailable {
+      refreshStatus()
+    }
+    updateFastRefreshPolling()
+  }
+
+  /// Unregister a previously registered UI surface.
+  func endFastRefresh() {
+    fastRefreshConsumers = max(0, fastRefreshConsumers - 1)
+    updateFastRefreshPolling()
+  }
+
+  /// Start or stop the 5-second fast-refresh timer based on whether any UI
+  /// surface is currently visible.
+  private func updateFastRefreshPolling() {
+    if fastRefreshConsumers > 0 {
+      startStatusRefreshPolling()
+    } else {
+      statusRefreshTimer?.invalidate()
+      statusRefreshTimer = nil
+    }
   }
 
   /// Periodically refresh seal status via direct HTTP API calls to keep seal
-  /// state and other details current.  Uses a shorter interval than the old
-  /// process-spawning approach since in-process HTTP is ~5× faster (~7 ms
-  /// vs ~38 ms) with no fork overhead.
+  /// state and other details current while a UI surface is open.  Uses a
+  /// shorter interval than the background poll since in-process HTTP is ~5×
+  /// faster (~7 ms vs ~38 ms) with no fork overhead.
   private func startStatusRefreshPolling(interval: TimeInterval = 5) {
     guard statusRefreshTimer == nil else { return }
     statusRefreshTimer = Timer.scheduledTimer(
@@ -1408,6 +1513,25 @@ class VaultManager {
     }
   }
 
+  /// Position `window` centered on whichever screen currently contains the
+  /// pointer, falling back to the main screen and then `center()`.
+  private func centerOnPointerScreen(_ window: NSWindow) {
+    let targetScreen =
+      NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+      ?? NSScreen.main
+      ?? NSScreen.screens.first
+
+    guard let screen = targetScreen else {
+      window.center()
+      return
+    }
+    let visibleFrame = screen.visibleFrame
+    let windowFrame = window.frame
+    let originX = visibleFrame.midX - windowFrame.width / 2
+    let originY = visibleFrame.midY - windowFrame.height / 2
+    window.setFrameOrigin(NSPoint(x: originX, y: originY))
+  }
+
   func showStatusWindow() {
     // Defer everything to the next run-loop pass (same pattern as
     // showAboutWindow) to avoid re-entrant AppKit crashes on macOS 26.
@@ -1457,22 +1581,7 @@ class VaultManager {
         hostingView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor)
       ])
 
-      // Center on the screen where the pointer is located (same approach
-      // as showAboutWindow) so the window appears predictably.
-      let targetScreen =
-        NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
-        ?? NSScreen.main
-        ?? NSScreen.screens.first
-
-      if let screen = targetScreen {
-        let visibleFrame = screen.visibleFrame
-        let windowFrame = window.frame
-        let originX = visibleFrame.midX - windowFrame.width / 2
-        let originY = visibleFrame.midY - windowFrame.height / 2
-        window.setFrameOrigin(NSPoint(x: originX, y: originY))
-      } else {
-        window.center()
-      }
+      self.centerOnPointerScreen(window)
 
       window.isReleasedWhenClosed = false
       window.level = .floating
@@ -1481,6 +1590,13 @@ class VaultManager {
       window.makeKeyAndOrderFront(nil)
       window.orderFrontRegardless()
 
+      // Replacing an existing status window balances the consumer it
+      // already registered; a brand-new window adds one.  Either way the
+      // window is visible now, so ensure exactly one fast-refresh consumer
+      // is attributed to it.
+      if self.statusWindow == nil {
+        self.beginFastRefresh()
+      }
       self.statusWindow = window
     }
   }
@@ -1679,13 +1795,11 @@ extension VaultManager {
 
     isRefreshing = true
     let addr = vaultAddr
-    Task.detached(priority: .userInitiated) {
-      let (output, parsed) = await self.httpClient.fetchVaultStatus(addr: addr)
-      await MainActor.run {
-        self.statusOutput = output
-        self.parsedStatus = parsed
-        self.isRefreshing = false
-      }
+    Task {
+      let (output, parsed) = await httpClient.fetchVaultStatus(addr: addr)
+      statusOutput = output
+      parsedStatus = parsed
+      isRefreshing = false
     }
   }
 
@@ -1693,13 +1807,11 @@ extension VaultManager {
     guard isVaultAvailable, !vaultAddr.isEmpty else { return }
 
     let addr = vaultAddr
-    Task.detached(priority: .userInitiated) {
-      let (output, parsed) = await self.httpClient.fetchVaultStatus(addr: addr)
-      await MainActor.run {
-        self.statusOutput = output
-        self.parsedStatus = parsed
-        self.showStatusWindow()
-      }
+    Task {
+      let (output, parsed) = await httpClient.fetchVaultStatus(addr: addr)
+      statusOutput = output
+      parsedStatus = parsed
+      showStatusWindow()
     }
   }
 }
@@ -1730,6 +1842,13 @@ private let concealedPasteboardType = NSPasteboard.PasteboardType(
 /// - The clipboard is automatically cleared after 10 seconds if it
 ///   still contains the copied value.  This limits the window during
 ///   which other applications can read the secret via `NSPasteboard`.
+///
+/// Note: both protections are *best-effort*, not a strong guarantee.  The
+/// concealed marker only defends against clipboard managers that honor the
+/// convention, and the 10-second clear is racy against any process that
+/// reads the pasteboard before it fires.  This is inherent to `NSPasteboard`
+/// (any process can read the general pasteboard at any time) and acceptable
+/// for a dev-mode secret, but it should not be mistaken for secure storage.
 ///
 /// Shared implementation used by both `VaultMenuView` and
 /// `StatusPopoverView` to avoid duplicated clipboard logic.
@@ -1810,26 +1929,44 @@ class MenuBarVisibilityMonitor {
     wasVisible = isVisible
   }
 
+  /// Weak cache of the window that hosts the status-bar button, so the
+  /// recurring visibility check doesn't walk every window's full subview
+  /// tree on each tick.  Re-scans only when the cached window has gone away
+  /// or no longer hosts the button.
+  private weak var cachedStatusWindow: NSWindow?
+
+  private func statusBarWindow() -> NSWindow? {
+    if let cached = cachedStatusWindow,
+      NSApp.windows.contains(where: { $0 === cached }),
+      cached.contentView?.findStatusBarButton() != nil {
+      return cached
+    }
+    cachedStatusWindow = nil
+    for window in NSApp.windows where window.contentView?.findStatusBarButton() != nil {
+      cachedStatusWindow = window
+      return window
+    }
+    return nil
+  }
+
   private func findStatusBarWindowVisible() -> Bool {
-    for window in NSApp.windows {
-      guard window.contentView?.findStatusBarButton() != nil else { continue }
+    // No status-bar window found — treat as visible (the original behavior),
+    // since absence usually means the icon hasn't been created yet rather
+    // than that it was hidden.
+    guard let window = statusBarWindow() else { return true }
 
-      guard window.isVisible, window.occlusionState.contains(.visible) else {
-        return false
-      }
-
-      let frame = window.frame
-      if frame.width < 1 || frame.height < 1 {
-        return false
-      }
-
-      let onAnyScreen = NSScreen.screens.contains { screen in
-        screen.frame.intersects(frame)
-      }
-      return onAnyScreen
+    guard window.isVisible, window.occlusionState.contains(.visible) else {
+      return false
     }
 
-    return true
+    let frame = window.frame
+    if frame.width < 1 || frame.height < 1 {
+      return false
+    }
+
+    return NSScreen.screens.contains { screen in
+      screen.frame.intersects(frame)
+    }
   }
 
   private static let hasAppBundle: Bool = {

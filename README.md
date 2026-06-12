@@ -201,8 +201,10 @@ The app also uses the these defense-in-depth measures:
 - **Ephemeral `URLSession`** use, so no credentials get cached to disk.
 - **CA certificate path validation** in the helper rejects symlinks, traversal, world-writable directories, and files with unsafe ownership or permissions.
 - **Log file safety**: the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
-- **XPC connection validation**: the helper validates each incoming XPC connection against a code-signing requirement. Developer ID signed builds enforce the full Apple certificate chain (`anchor apple generic`) and optional Team ID pinning. Ad-hoc signed builds verify the connecting process has the correct bundle identifier.
+- **XPC connection validation**: the helper validates each incoming XPC connection against a code-signing requirement. Developer ID signed builds enforce the full Apple certificate chain (`anchor apple generic`) and optional Team ID pinning. Ad-hoc signed builds verify only the connecting process's bundle identifier — a self-asserted value — so ad-hoc builds are **dev-only** and rely on the per-user launchd domain (same-user access) for isolation. Ship Developer ID–signed builds for distribution.
 - **XPC isolation**: the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
+- **Input validation**: values parsed from the Vault startup log are validated before use — `VAULT_ADDR` must be a loopback URL, and the root token and unseal key must match their expected character sets (`[A-Za-z0-9._-]` and the base64 alphabet, respectively), rejecting control characters, whitespace, and shell metacharacters.
+- **Concealed clipboard copies**: secrets copied to the clipboard are marked with `org.nspasteboard.ConcealedType` and cleared after 10 seconds. This is best-effort — it depends on clipboard managers honoring the convention and is racy against fast readers — not a strong guarantee, since any process can read the general pasteboard.
 
 ## Uninstallation
 
