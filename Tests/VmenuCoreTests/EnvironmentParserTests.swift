@@ -44,6 +44,30 @@ final class EnvironmentParserTests: XCTestCase {
     XCTAssertEqual(env.unsealKey, "abc123def456")
   }
 
+  /// Real Vault dev-mode output prefixes each export line with a `$ ` shell
+  /// prompt, e.g. `    $ export VAULT_ADDR='...'`.  Regression test for the
+  /// parser previously requiring a bare `export VAULT_ADDR=` prefix, which
+  /// left vaultAddr/vaultCACert empty (orange seal status, dead "Show Server
+  /// Details") even though Vault was running and unsealed.
+  func testParseShellPromptPrefixedExports() {
+    let log = """
+    You may need to set the following environment variables:
+
+        $ export VAULT_ADDR='https://127.0.0.1:8200'
+        $ export VAULT_CACERT='/var/folders/n2/T/vault-tls252677119/vault-ca.pem'
+
+    Unseal Key: AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKK=
+    Root Token: hvs.EXAMPLEEXAMPLEEXAMPLE000
+    """
+
+    let env = parseEnvironmentVariables(from: log)
+
+    XCTAssertEqual(env.vaultAddr, "https://127.0.0.1:8200")
+    XCTAssertEqual(env.vaultCACert, "/var/folders/n2/T/vault-tls252677119/vault-ca.pem")
+    XCTAssertEqual(env.vaultToken, "hvs.EXAMPLEEXAMPLEEXAMPLE000")
+    XCTAssertEqual(env.unsealKey, "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKK=")
+  }
+
   func testParseDoubleQuotedValues() {
     let log = """
       export VAULT_ADDR="https://127.0.0.1:8200"
