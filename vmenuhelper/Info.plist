@@ -2,23 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundlePackageType</key>
-    <string>XPC!</string>
-    <key>CFBundleExecutable</key>
-    <string>com.brianshumate.vmenu.helper</string>
-    <key>CFBundleName</key>
-    <string>vmenu Helper</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.brianshumate.vmenu.helper</string>
-    <key>CFBundleVersion</key>
-    <string>1.27</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.27</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>com.brianshumate.vmenu.helper</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.brianshumate.vmenu.helper</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>vmenu Helper</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.28.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.28.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
 </dict>
 </plist>

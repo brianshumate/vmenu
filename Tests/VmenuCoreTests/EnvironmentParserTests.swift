@@ -376,11 +376,14 @@ final class EnvironmentParserTests: XCTestCase {
     XCTAssertTrue(isValidVaultToken(maxToken))
   }
 
-  func testTokenWithShellMetacharsAccepted() {
-    // Shell metacharacters are printable ASCII. Since tokens are only
-    // displayed in SwiftUI Text views and copied to NSPasteboard (never
-    // passed to a shell), they don't pose a risk and are accepted.
-    XCTAssertTrue(isValidVaultToken("root$(whoami)"))
+  func testTokenWithShellMetacharsRejected() {
+    // Shell metacharacters fall outside the Vault token alphabet
+    // ([A-Za-z0-9._-]) and are rejected, documenting intent and removing a
+    // latent footgun if the token is ever interpolated into a command.
+    XCTAssertFalse(isValidVaultToken("root$(whoami)"))
+    XCTAssertFalse(isValidVaultToken("tok;rm -rf"))
+    XCTAssertFalse(isValidVaultToken("tok|cat"))
+    XCTAssertFalse(isValidVaultToken("tok'quote"))
   }
 
   // MARK: - isValidVaultUnsealKey tests
@@ -436,10 +439,9 @@ final class EnvironmentParserTests: XCTestCase {
     XCTAssertFalse(isValidVaultUnsealKey("abc\u{FF}def"))
   }
 
-  func testTokenWithBacktickAccepted() {
-    // Backticks are printable ASCII. Tokens are never evaluated by a
-    // shell, so this is safe and accepted.
-    XCTAssertTrue(isValidVaultToken("`whoami`"))
+  func testTokenWithBacktickRejected() {
+    // Backticks fall outside the Vault token alphabet and are rejected.
+    XCTAssertFalse(isValidVaultToken("`whoami`"))
   }
 
   func testInvalidUnsealKeyWithHyphen() {

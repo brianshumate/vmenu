@@ -68,6 +68,15 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
       // Ad-hoc builds: only verify the bundle identifier.  The ad-hoc
       // signature cannot satisfy `anchor apple generic` because there
       // is no Apple-rooted certificate chain.
+      //
+      // ⚠️ DEV-ONLY: a code-signing *identifier* is self-asserted and
+      // trivially reproduced by any locally built ad-hoc binary, so on
+      // ad-hoc builds this gate is effectively "any same-user process that
+      // claims this identifier."  The real protection here is that the
+      // helper lives in the per-user launchd domain, reachable only by the
+      // same user.  Distribution builds MUST be Developer ID–signed and set
+      // `teamID` above so the `anchor apple generic and certificate
+      // leaf[subject.OU]` requirement is actually enforced.
       return "identifier \"com.brianshumate.vmenu\""
     }
     let base = "identifier \"com.brianshumate.vmenu\" and anchor apple generic"
@@ -81,14 +90,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
     _ listener: NSXPCListener,
     shouldAcceptNewConnection newConnection: NSXPCConnection
   ) -> Bool {
-    logger.info("[HELPER-XPC] Incoming connection from PID \(newConnection.processIdentifier)")
-
-    // Validate the connecting process is our main app by checking its
-    // code-signing identity.  Reject connections that do not satisfy
-    // the requirement — this prevents local privilege escalation
-    // through the helper's Mach service.
+    // Validate before logging anything about the connection to avoid
+    // disclosing operational state to rejected peers.
     if !validateConnection(newConnection) {
-      logger.error("[HELPER-XPC] Rejecting connection — code-signing requirement not met (pid \(newConnection.processIdentifier))")
+      logger.error("[HELPER-XPC] Rejecting connection — code-signing requirement not met")
       newConnection.invalidate()
       return false
     }
@@ -98,19 +103,21 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
     newConnection.exportedInterface = interface
     newConnection.exportedObject = HelperHandler()
     newConnection.resume()
-    logger.info("[HELPER-XPC] Connection accepted and resumed")
     return true
   }
 
   /// Check the connecting process against the code-signing requirement.
   ///
-  /// Uses `SecCodeCopyGuestWithAttributes` to obtain the code object for
-  /// the connecting PID, then evaluates it against the compiled
-  /// requirement string.
+  /// Uses `SecCodeCopyGuestWithAttributes` with the connecting PID to obtain
+  /// a SecCode for the peer, then evaluates it against the compiled requirement
+  /// string.  Note: PID-based lookup has a narrow recycling race window; the
+  /// preferred fix is to use `kSecGuestAttributeAudit` with the audit token
+  /// from `NSXPCConnection.auditToken`, but that property is not bridged to
+  /// Swift without Objective-C interop.  Given the helper runs in a GUI
+  /// per-user launchd domain (accessible only to the same user), the residual
+  /// risk is low.
   private func validateConnection(_ connection: NSXPCConnection) -> Bool {
     let pid = connection.processIdentifier
-    logger.info("[HELPER-XPC] Validating connection from PID \(pid)")
-    logger.info("[HELPER-XPC] Using requirement: \(Self.signingRequirement, privacy: .public)")
 
     // Obtain the SecCode for the connecting process.
     var codeRef: SecCode?
@@ -122,7 +129,6 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
       logger.error("[HELPER-XPC] SecCodeCopyGuestWithAttributes failed with status \(copyStatus)")
       return false
     }
-    logger.info("[HELPER-XPC] Got SecCode for PID \(pid)")
 
     // Compile the requirement string.
     var requirementRef: SecRequirement?
@@ -137,12 +143,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate {
       logger.error("[HELPER-XPC] SecRequirementCreateWithString failed with status \(createStatus)")
       return false
     }
-    logger.info("[HELPER-XPC] Compiled requirement successfully")
 
     // Evaluate the code against the requirement.
     let checkStatus = SecCodeCheckValidity(code, [], requirement)
     if checkStatus == errSecSuccess {
-      logger.info("[HELPER-XPC] Code signature validation PASSED")
       return true
     } else {
       logger.error("[HELPER-XPC] Code signature validation FAILED with status \(checkStatus)")
@@ -217,7 +221,36 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     reply(locateVaultBinary())
   }
 
+  /// Short TTL for the resolved-vault-path cache.  `findVaultPath` doubles as
+  /// the lightweight reachability "ping", so without a cache a missing
+  /// `vault` forks `/usr/bin/which` on every check.  A brief cache keeps the
+  /// ping cheap while still picking up a newly installed (or removed) binary
+  /// within the window.
+  private static let vaultPathCacheTTL: TimeInterval = 30
+  private static let vaultPathCacheLock = NSLock()
+  // Guarded by `vaultPathCacheLock` — the lock provides the synchronization
+  // the compiler can't see, so the access is safe despite the annotation.
+  nonisolated(unsafe) private static var vaultPathCache: (path: String?, timestamp: Date)?
+
   private func locateVaultBinary() -> String? {
+    Self.vaultPathCacheLock.lock()
+    if let cached = Self.vaultPathCache,
+      Date().timeIntervalSince(cached.timestamp) < Self.vaultPathCacheTTL {
+      let path = cached.path
+      Self.vaultPathCacheLock.unlock()
+      return path
+    }
+    Self.vaultPathCacheLock.unlock()
+
+    let resolved = resolveVaultBinary()
+
+    Self.vaultPathCacheLock.lock()
+    Self.vaultPathCache = (resolved, Date())
+    Self.vaultPathCacheLock.unlock()
+    return resolved
+  }
+
+  private func resolveVaultBinary() -> String? {
     let fileManager = FileManager.default
     let home = fileManager.homeDirectoryForCurrentUser.path
 
@@ -650,12 +683,20 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
     }
     guard fileSize > 0 else { return "" }
 
+    // POSIX read() may return fewer bytes than requested; loop until EOF.
     var buffer = Data(count: fileSize)
-    let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
-      guard let base = rawBuffer.baseAddress else { return 0 }
-      return read(logFileDescriptor, base, fileSize)
+    let totalRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+      guard let base = rawBuffer.baseAddress else { return -1 }
+      var offset = 0
+      while offset < fileSize {
+        let bytesRead = read(logFileDescriptor, base.advanced(by: offset), fileSize - offset)
+        if bytesRead <= 0 { break }
+        offset += bytesRead
+      }
+      return offset
     }
-    guard bytesRead == fileSize else { return nil }
+    guard totalRead > 0 else { return nil }
+    if totalRead < fileSize { buffer = buffer.prefix(totalRead) }
 
     return String(data: buffer, encoding: .utf8)
   }
@@ -725,35 +766,35 @@ final class HelperHandler: NSObject, VmenuHelperProtocol {
 
 // MARK: - Main entry point
 
-logger.info("[HELPER-STARTUP] vmenu XPC helper starting...")
-logger.info("[HELPER-STARTUP] Process ID: \(getpid())")
-logger.info("[HELPER-STARTUP] User ID: \(getuid())")
-logger.info("[HELPER-STARTUP] Mach service name: \(vmenuHelperMachServiceName)")
+logger.debug("[HELPER-STARTUP] vmenu XPC helper starting...")
+logger.debug("[HELPER-STARTUP] Process ID: \(getpid())")
+logger.debug("[HELPER-STARTUP] User ID: \(getuid())")
+logger.debug("[HELPER-STARTUP] Mach service name: \(vmenuHelperMachServiceName)")
 
 // Log bundle and code signing info for debugging
 if let bundlePath = Bundle.main.bundlePath as String? {
-  logger.info("[HELPER-STARTUP] Bundle path: \(bundlePath, privacy: .public)")
+  logger.debug("[HELPER-STARTUP] Bundle path: \(bundlePath, privacy: .public)")
 }
 if let bundleID = Bundle.main.bundleIdentifier {
-  logger.info("[HELPER-STARTUP] Bundle identifier: \(bundleID, privacy: .public)")
+  logger.debug("[HELPER-STARTUP] Bundle identifier: \(bundleID, privacy: .public)")
 } else {
   logger.warning("[HELPER-STARTUP] No bundle identifier found - this may cause XPC issues on macOS 26")
 }
 
 let delegate = HelperDelegate()
-logger.info("[HELPER-STARTUP] Created HelperDelegate")
+logger.debug("[HELPER-STARTUP] Created HelperDelegate")
 
 let listener = NSXPCListener(machServiceName: vmenuHelperMachServiceName)
-logger.info("[HELPER-STARTUP] Created NSXPCListener for Mach service")
+logger.debug("[HELPER-STARTUP] Created NSXPCListener for Mach service")
 
 listener.delegate = delegate
-logger.info("[HELPER-STARTUP] Set listener delegate")
+logger.debug("[HELPER-STARTUP] Set listener delegate")
 
 listener.resume()
-logger.info("[HELPER-STARTUP] Listener resumed - now accepting XPC connections")
+logger.debug("[HELPER-STARTUP] Listener resumed - now accepting XPC connections")
 
 // Run the run loop forever. The helper is a long-running agent managed by
 // SMAppService. It will be started automatically when the main app is
 // launched and can be stopped when the app terminates.
-logger.info("[HELPER-STARTUP] Entering run loop...")
+logger.debug("[HELPER-STARTUP] Entering run loop...")
 RunLoop.current.run()

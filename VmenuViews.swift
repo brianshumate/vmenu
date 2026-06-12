@@ -203,9 +203,8 @@ struct DottedLoadingIndicator: View {
       HStack(spacing: spacing) {
         ForEach(0..<dotCount, id: \.self) { _ in
           Circle()
-            .fill(Color.secondary)
+            .fill(.tertiary)
             .frame(width: dotSize, height: dotSize)
-            .opacity(0.6)
         }
       }
       .accessibilityElement()
@@ -219,7 +218,7 @@ struct DottedLoadingIndicator: View {
         HStack(spacing: spacing) {
           ForEach(0..<dotCount, id: \.self) { index in
             Circle()
-              .fill(Color.secondary)
+              .fill(.secondary)
               .frame(width: dotSize, height: dotSize)
               .opacity(dotOpacity(index: index, active: activeIndex))
           }
@@ -272,10 +271,14 @@ struct VaultMenuView: View {
         }
         Divider()
           .padding(.horizontal, 8)
-        quitSection
+        footerMenu
       }
     }
     .frame(minWidth: 320, idealWidth: 360)
+    // The menu popover is only on screen while open, so drive the faster
+    // status-refresh cadence for its lifetime and let it pause when closed.
+    .onAppear { vaultManager.beginFastRefresh() }
+    .onDisappear { vaultManager.endFastRefresh() }
   }
 
   /// View shown when the XPC helper is unavailable.
@@ -342,36 +345,7 @@ struct VaultMenuView: View {
       Divider()
         .padding(.horizontal, 8)
 
-      VStack(spacing: 2) {
-        menuButton(
-          title: String(
-            localized: "About vmenu", comment: "Menu button to open the About window"),
-          icon: "info.circle.fill"
-        ) {
-          VaultManager.shared.showAboutWindow()
-        }
-        // Diagnostic options - only visible when debug mode is enabled
-        if vaultManager.isDebugModeEnabled {
-          menuButton(
-            title: vaultManager.isVerboseLoggingEnabled
-              ? String(localized: "Disable Verbose Logging", comment: "Menu button to disable verbose helper logging")
-              : String(localized: "Enable Verbose Logging", comment: "Menu button to enable verbose helper logging"),
-            icon: "text.magnifyingglass"
-          ) {
-            vaultManager.toggleVerboseLogging()
-          }
-        }
-        menuButton(
-          title: String(
-            localized: "Quit vmenu", comment: "Menu button to quit the application"),
-          icon: "xmark.circle.fill",
-          shortcut: "⌘Q"
-        ) {
-          NSApplication.shared.terminate(nil)
-        }
-      }
-      .padding(.vertical, 4)
-      .padding(.horizontal, 4)
+      footerMenu
     }
   }
 
@@ -598,7 +572,7 @@ struct VaultMenuView: View {
         // Transparency and Increase Contrast automatically.
         .fill(
           reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor))
+            ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
             : AnyShapeStyle(.ultraThinMaterial)
         )
         .overlay(
@@ -659,7 +633,7 @@ extension VaultMenuView {
         // adapts automatically to all accessibility settings.
         .fill(
           reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.4))
+            ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
             : AnyShapeStyle(.ultraThinMaterial))
     )
   }
@@ -686,7 +660,7 @@ extension VaultMenuView {
       Capsule()
         .fill(
           reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.4))
+            ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
             : AnyShapeStyle(.ultraThinMaterial))
     )
     .help(
@@ -787,7 +761,12 @@ extension VaultMenuView {
     }
   }
 
-  var quitSection: some View {
+  /// Shared footer menu (About / verbose logging / diagnostics / Quit).
+  ///
+  /// Used by both the normal menu and the helper-unavailable view so the
+  /// labels, shortcuts, and debug-mode gating live in exactly one place and
+  /// can't drift apart.
+  var footerMenu: some View {
     VStack(spacing: 2) {
       menuButton(
         title: String(
@@ -838,12 +817,17 @@ extension VaultMenuView {
 }
 
 struct AboutView: View {
+  // The version is sourced solely from Info.plist (stamped at build time
+  // from `version.txt` / the git tag — see `scripts/bump-version.sh` and
+  // `scripts/build-app.sh`).  A neutral placeholder is used when the
+  // Info.plist is unavailable (e.g. a bare `swift run` without a bundle)
+  // so a stale literal can never drift from the real version.
   private let appVersion: String = {
-    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.22"
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
   }()
 
   private let buildNumber: String = {
-    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1.22"
+    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
   }()
 
   @ScaledMetric(relativeTo: .title2) private var appIconSize: CGFloat = 64
@@ -882,7 +866,7 @@ struct AboutView: View {
         .padding(.horizontal, 40)
 
       VStack(spacing: 4) {
-        Text("Made with ❤️ and 🤖 by [Brian Shumate](https://brianshumate.com/)")
+        Text("Made with ❤️ by [Brian Shumate](https://brianshumate.com/) and 🤖")
           .font(.caption)
           .fontWeight(.medium)
           .foregroundStyle(.primary)
@@ -973,7 +957,17 @@ func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSImage {
       height: dotRadius * 2
     )
     let dotPath = NSBezierPath(ovalIn: dotRect)
-    state.dotColor.setFill()
+    // Prefer asset-catalog colors (StatusStopped/StatusSealed/StatusRunning)
+    // so the menu bar dot picks up the HC variants when Increase Contrast is
+    // active. Falls back to NSColor.system* if the asset is unavailable.
+    let dotColor: NSColor = {
+      switch state {
+      case .stopped: return NSColor(named: "StatusStopped") ?? .systemRed
+      case .sealed:  return NSColor(named: "StatusSealed")  ?? .systemOrange
+      case .running: return NSColor(named: "StatusRunning") ?? .systemGreen
+      }
+    }()
+    dotColor.setFill()
     dotPath.fill()
 
     return true

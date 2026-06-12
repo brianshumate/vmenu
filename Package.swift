@@ -36,8 +36,11 @@ let package = Package(
         "vmenuhelper/com.brianshumate.vmenu.helper.plist",
         "Sources",
         "Tests",
-        "build-app.sh",
-        "scripts"
+        "scripts",
+        "version.txt",
+        "AGENTS.md",
+        "F-IMPROVE.md",
+        ".claude"
       ],
       sources: ["vmenu.swift", "StatusViews.swift", "VmenuViews.swift", "HelperDiagnostics.swift"]
     ),

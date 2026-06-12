@@ -49,7 +49,7 @@ struct StatusPopoverView: View {
       // Icon
       ZStack {
         Circle()
-          .fill(Color(nsColor: .separatorColor).opacity(0.12))
+          .fill(Color(nsColor: .quaternaryLabelColor))
           .frame(width: heroIconCircleSize, height: heroIconCircleSize)
         Image(systemName: "server.rack")
           .symbolRenderingMode(.hierarchical)
@@ -300,7 +300,7 @@ struct StatusPopoverView: View {
               RoundedRectangle(cornerRadius: 5)
                 // .ultraThinMaterial for small button chips on a material surface.
                 .fill(reduceTransparency
-                  ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.25))
+                  ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
                   : AnyShapeStyle(.ultraThinMaterial))
             )
           }
@@ -356,7 +356,7 @@ struct StatusPopoverView: View {
             .background(
               RoundedRectangle(cornerRadius: 5)
                 .fill(reduceTransparency
-                  ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.25))
+                  ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
                   : AnyShapeStyle(.ultraThinMaterial))
             )
           }
@@ -534,7 +534,7 @@ private struct MetricTile: View {
           // .ultraThinMaterial for the icon box so it separates from the tile
           // background while still adapting to all system appearance settings.
           .fill(reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .separatorColor).opacity(0.18))
+            ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
             : AnyShapeStyle(.ultraThinMaterial))
           .frame(width: iconBoxSize, height: iconBoxSize)
         Image(systemName: icon)
@@ -638,62 +638,6 @@ private struct ClusterDetailRow: View {
           .padding(.leading, 24)
       }
     }
-  }
-}
-
-// MARK: - StatusRowView (kept for backward compatibility)
-
-struct StatusRowView: View {
-  let label: String
-  let value: String
-
-  var body: some View {
-    HStack {
-      Text(label)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
-      Spacer()
-      Text(value)
-        .font(.system(.caption, design: .monospaced))
-        .lineLimit(1)
-    }
-  }
-}
-
-// MARK: - StatusItemView (kept for backward compatibility)
-
-struct StatusItemView: View {
-  let label: String
-  let value: String
-  let icon: String
-
-  var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: icon)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .frame(width: 16)
-        .accessibilityHidden(true)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(label)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-        Text(value)
-          .font(.subheadline)
-          .fontWeight(.medium)
-          .lineLimit(1)
-      }
-
-      Spacer()
-    }
-    .padding(10)
-    .background(
-      RoundedRectangle(cornerRadius: 8)
-        .fill(.regularMaterial)
-    )
   }
 }
 

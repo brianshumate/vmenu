@@ -175,15 +175,21 @@ public func safeReadCACertData(_ path: String) -> Data? {
     return nil
   }
 
+  // POSIX read() may return fewer bytes than requested; loop until EOF.
   var buffer = Data(count: fileSize)
-  let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
-    guard let baseAddress = rawBuffer.baseAddress else { return 0 }
-    return read(fileDescriptor, baseAddress, fileSize)
+  let totalRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+    guard let base = rawBuffer.baseAddress else { return -1 }
+    var offset = 0
+    while offset < fileSize {
+      let bytesRead = read(fileDescriptor, base.advanced(by: offset), fileSize - offset)
+      if bytesRead <= 0 { break }
+      offset += bytesRead
+    }
+    return offset
   }
 
-  guard bytesRead == fileSize else {
+  guard totalRead > 0 else {
     return nil
   }
-
-  return buffer
+  return totalRead < fileSize ? buffer.prefix(totalRead) : buffer
 }

@@ -23,9 +23,10 @@ HELPER_SPM_TARGET="vmenu-helper"
 APP_BUNDLE="${APP_NAME}.app"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="${SCRIPT_DIR}/${APP_BUNDLE}"
-ENTITLEMENTS="${SCRIPT_DIR}/vmenu/vmenu.entitlements"
-HELPER_ENTITLEMENTS="${SCRIPT_DIR}/vmenuhelper/vmenuhelper.entitlements"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+APP_DIR="${ROOT_DIR}/${APP_BUNDLE}"
+ENTITLEMENTS="${ROOT_DIR}/vmenu/vmenu.entitlements"
+HELPER_ENTITLEMENTS="${ROOT_DIR}/vmenuhelper/vmenuhelper.entitlements"
 
 # ── Build ────────────────────────────────────────────────────────────────────
 echo "Building ${APP_NAME} + helper (${CONFIGURATION})..."
@@ -59,10 +60,10 @@ cp "${BINARY}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp "${HELPER_BINARY}" "${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
 
 # Copy Info.plist
-cp "${SCRIPT_DIR}/vmenu/Info.plist" "${APP_DIR}/Contents/Info.plist"
+cp "${ROOT_DIR}/vmenu/Info.plist" "${APP_DIR}/Contents/Info.plist"
 
 # Copy helper launchd plist into the bundle location SMAppService expects
-cp "${SCRIPT_DIR}/vmenuhelper/${HELPER_NAME}.plist" \
+cp "${ROOT_DIR}/vmenuhelper/${HELPER_NAME}.plist" \
    "${APP_DIR}/Contents/Library/LaunchAgents/${HELPER_NAME}.plist"
 
 # PkgInfo — standard for all macOS .app bundles
@@ -85,10 +86,10 @@ printf 'APPL????' > "${APP_DIR}/Contents/PkgInfo"
 #   Running after actool ensures our version (10 sizes) is not overwritten by
 #   actool's minimal single-slot output.
 #   Falls back to the pre-built vmenu/AppIcon.icns when rsvg-convert is absent.
-ICON_SRC="${SCRIPT_DIR}/vmenu/icon-layers/variants/default.svg"
-ICONSET_DIR="${SCRIPT_DIR}/vmenu/AppIcon.iconset"
+ICON_SRC="${ROOT_DIR}/vmenu/icon-layers/variants/default.svg"
+ICONSET_DIR="${ROOT_DIR}/vmenu/AppIcon.iconset"
 ICNS_OUT="${APP_DIR}/Contents/Resources/AppIcon.icns"
-XCASSETS_SRC="${SCRIPT_DIR}/vmenu/Assets.xcassets"
+XCASSETS_SRC="${ROOT_DIR}/vmenu/Assets.xcassets"
 ACTOOL_PARTIAL_PLIST="${APP_DIR}/Contents/Resources/actool-partial.plist"
 
 # Step 1: compile asset catalog with actool → Assets.car + appearance-variant icons.
@@ -155,9 +156,9 @@ if [ -f "${ICON_SRC}" ] && command -v rsvg-convert &>/dev/null && command -v ico
     iconutil --convert icns --output "${ICNS_OUT}" "${ICONSET_DIR}"
     rm -rf "${ICONSET_DIR}"
     echo "Included app icon (.icns, built from SVG layers)."
-elif [ -f "${SCRIPT_DIR}/vmenu/AppIcon.icns" ]; then
+elif [ -f "${ROOT_DIR}/vmenu/AppIcon.icns" ]; then
     # Fallback: use pre-built .icns if rsvg-convert / iconutil are unavailable.
-    cp "${SCRIPT_DIR}/vmenu/AppIcon.icns" "${ICNS_OUT}"
+    cp "${ROOT_DIR}/vmenu/AppIcon.icns" "${ICNS_OUT}"
     echo "Included app icon (.icns, pre-built fallback — install rsvg-convert for source-derived builds)."
 else
     echo "Warning: AppIcon.icns not found and rsvg-convert unavailable. App will use default icon."
@@ -183,8 +184,8 @@ if [ "${SIGN}" = "sign" ]; then
     # Sign helper first (inner binary before outer bundle)
     # Use explicit identifier to match the Mach service name for XPC lookup
     echo "Signing helper with identifier ${HELPER_NAME}..."
-    HELPER_PARENT_CONSTRAINT="${SCRIPT_DIR}/vmenuhelper/launch-constraint-parent.plist"
-    HELPER_SELF_CONSTRAINT="${SCRIPT_DIR}/vmenuhelper/launch-constraint-self.plist"
+    HELPER_PARENT_CONSTRAINT="${ROOT_DIR}/vmenuhelper/launch-constraint-parent.plist"
+    HELPER_SELF_CONSTRAINT="${ROOT_DIR}/vmenuhelper/launch-constraint-self.plist"
 
     CONSTRAINT_FLAGS=()
     if [ -f "${HELPER_PARENT_CONSTRAINT}" ]; then
