@@ -58,7 +58,7 @@ public struct LeaderResponse: Codable, Equatable {
 // MARK: - VaultStatus
 
 /// Parsed representation of `vault status` output.
-public struct VaultStatus: Equatable {
+public struct VaultStatus: Equatable, Sendable {
   public var sealType: String = "-"
   public var initialized: String = "-"
   public var sealed: String = "-"
