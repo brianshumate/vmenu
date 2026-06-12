@@ -46,7 +46,7 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
   private let stateLock = NSLock()
   private var _caCertPath = ""
   private var _caCertData: Data?
-  private var _cachedCertificate: SecCertificate?
+  private var _cachedCertificates: [SecCertificate] = []
 
   /// Path to the CA certificate PEM file (from `VAULT_CACERT`).
   /// Updated by the caller whenever the environment variables are parsed.
@@ -67,7 +67,7 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
   /// The sandboxed app cannot read arbitrary filesystem paths, so the helper
   /// reads the CA cert file and passes the raw data back over XPC for TLS
   /// trust evaluation.  Setting this property also parses and caches the
-  /// SecCertificate so TLS challenges reuse the parsed object.
+  /// SecCertificate chain so TLS challenges reuse the parsed objects.
   var caCertData: Data? {
     get {
       stateLock.lock()
@@ -75,23 +75,23 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
       return _caCertData
     }
     set {
-      // Parse outside the lock — `loadCertificate` is pure and the DER/PEM
+      // Parse outside the lock — `loadCertificates` is pure and the DER/PEM
       // decode shouldn't block other accessors.
-      let parsed = newValue.flatMap { loadCertificate(from: $0) }
+      let parsed = newValue.map { loadCertificates(from: $0) } ?? []
       stateLock.lock()
       defer { stateLock.unlock() }
       _caCertData = newValue
-      _cachedCertificate = parsed
+      _cachedCertificates = parsed
     }
   }
 
   /// Atomic snapshot of the certificate state for the TLS challenge handler,
-  /// so the "has data" check and the parsed certificate cannot be torn apart
-  /// by a concurrent write on the main actor.
-  private func certificateState() -> (hasData: Bool, certificate: SecCertificate?) {
+  /// so the "has data" check and the parsed certificate chain cannot be torn
+  /// apart by a concurrent write on the main actor.
+  private func certificateState() -> (hasData: Bool, certificates: [SecCertificate]) {
     stateLock.lock()
     defer { stateLock.unlock() }
-    return (_caCertData != nil, _cachedCertificate)
+    return (_caCertData != nil, _cachedCertificates)
   }
 
   /// Fetch seal status from the Vault HTTP API.
@@ -174,7 +174,7 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
     // Snapshot the certificate state atomically so a concurrent update on
     // the main actor cannot tear the "has data" check apart from the parsed
     // certificate read.
-    let (hasData, cachedCert) = certificateState()
+    let (hasData, cachedCerts) = certificateState()
 
     // When no CA cert data is available, fail closed: reject the
     // connection rather than falling through to the system trust store.
@@ -185,13 +185,13 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
       return
     }
 
-    guard let cert = cachedCert else {
+    guard !cachedCerts.isEmpty else {
       logger.warning("Failed to load CA certificate — rejecting TLS challenge")
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
 
-    SecTrustSetAnchorCertificates(serverTrust, [cert] as CFArray)
+    SecTrustSetAnchorCertificates(serverTrust, cachedCerts as CFArray)
     SecTrustSetAnchorCertificatesOnly(serverTrust, true)
 
     var error: CFError?
@@ -204,24 +204,40 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
 
   // MARK: - Certificate Loading
 
-  /// Load a DER or PEM certificate from raw data.
-  private func loadCertificate(from data: Data) -> SecCertificate? {
-    // Try DER first.
+  /// Load a DER or PEM certificate chain from raw data.
+  ///
+  /// A PEM file may concatenate several `BEGIN/END CERTIFICATE` blocks (a CA
+  /// chain), so each block is decoded separately and returned in order.  A
+  /// raw DER blob carries a single certificate.
+  private func loadCertificates(from data: Data) -> [SecCertificate] {
+    // Try DER first (no PEM envelope — single cert only).
     if let cert = SecCertificateCreateWithData(nil, data as CFData) {
-      return cert
+      return [cert]
     }
-    // Try PEM: strip header/footer and base64-decode.
-    if let pemString = String(data: data, encoding: .utf8) {
-      let base64 =
-        pemString
-        .components(separatedBy: "\n")
-        .filter { !$0.hasPrefix("-----") }
-        .joined()
-      if let derData = Data(base64Encoded: base64) {
-        return SecCertificateCreateWithData(nil, derData as CFData)
+    // Parse PEM: split on BEGIN/END boundaries, decode each block separately.
+    guard let pemString = String(data: data, encoding: .utf8) else {
+      return []
+    }
+    var certs: [SecCertificate] = []
+    var base64Lines: [String] = []
+    var inBlock = false
+    for line in pemString.components(separatedBy: "\n") {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed == "-----BEGIN CERTIFICATE-----" {
+        inBlock = true
+        base64Lines = []
+      } else if trimmed == "-----END CERTIFICATE-----" {
+        inBlock = false
+        if let derData = Data(base64Encoded: base64Lines.joined()),
+          let cert = SecCertificateCreateWithData(nil, derData as CFData) {
+          certs.append(cert)
+        }
+        base64Lines = []
+      } else if inBlock, !trimmed.isEmpty {
+        base64Lines.append(trimmed)
       }
     }
-    return nil
+    return certs
   }
 }
 
@@ -424,6 +440,30 @@ final class XPCClient: @unchecked Sendable {
     }
   }
 
+  /// Check if the helper agent responds to a simple XPC call.
+  ///
+  /// Races an actual `findVaultPath` call against a 2-second timeout and
+  /// returns `true` only if the helper actually replies first.  A timeout
+  /// returns `false` so the caller can trigger recovery.
+  private func healthCheck() async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        _ = await self.findVaultPath()
+        return true
+      }
+      group.addTask {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        return false
+      }
+      // First result wins.
+      if let result = await group.next() {
+        group.cancelAll()
+        return result
+      }
+      return false
+    }
+  }
+
   /// Ensure the helper is reachable, attempting recovery if needed.
   ///
   /// Call this before operations that require the helper to be healthy.
@@ -451,27 +491,7 @@ final class XPCClient: @unchecked Sendable {
     }
 
     // Try a simple XPC call with a timeout.
-    let reachable = await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        // Actual health check.
-        _ = await self.findVaultPath()
-        return true
-      }
-      group.addTask {
-        // Timeout after 2 seconds.
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        return false
-      }
-
-      // First result wins.
-      if let result = await group.next() {
-        group.cancelAll()
-        return result
-      }
-      return false
-    }
-
-    if reachable {
+    if await healthCheck() {
       recordSuccess()
       return true
     }
@@ -485,22 +505,7 @@ final class XPCClient: @unchecked Sendable {
     try? await Task.sleep(nanoseconds: 750_000_000)
 
     // Try again.
-    let secondAttempt = await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        _ = await self.findVaultPath()
-        return true
-      }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        return false
-      }
-
-      if let result = await group.next() {
-        group.cancelAll()
-        return result
-      }
-      return false
-    }
+    let secondAttempt = await healthCheck()
 
     if secondAttempt {
       recordSuccess()
