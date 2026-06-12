@@ -148,7 +148,15 @@ public func parseEnvironmentVariables(from content: String) -> VaultEnvironment 
   let quotesAndWhitespace = CharacterSet(charactersIn: "\"'").union(.whitespacesAndNewlines)
 
   for line in lines.reversed() {
-    let stripped = line.trimmingCharacters(in: .whitespaces)
+    var stripped = line.trimmingCharacters(in: .whitespaces)
+
+    // Vault's dev-mode banner prints the export lines with a leading shell
+    // prompt, e.g. `    $ export VAULT_ADDR='...'`.  Strip an optional `$ `
+    // prompt so the prefix checks below match the real output, not just the
+    // idealized `export VAULT_ADDR=` form.
+    if stripped.hasPrefix("$ ") {
+      stripped = String(stripped.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+    }
 
     if !foundAddr, stripped.hasPrefix("export VAULT_ADDR=") {
       let value = String(stripped.dropFirst("export VAULT_ADDR=".count))
