@@ -12,10 +12,11 @@ final class CACertPathValidatorTests: XCTestCase {
 
   override func setUp() {
     super.setUp()
-    // Create a temporary directory under the user's home (not /tmp) so the
-    // test files are in a location that passes the unsafe-directory check.
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    tempDir = home
+    // Create a temporary directory under the Darwin per-user temp dir — the
+    // only location validateCACertPath / safeReadCACertData accept (they
+    // require paths under darwinUserTempDir() and reject /tmp and friends).
+    let base = URL(fileURLWithPath: darwinUserTempDir(), isDirectory: true)
+    tempDir = base
       .appendingPathComponent(".vmenu-test-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(
       at: tempDir, withIntermediateDirectories: true,
