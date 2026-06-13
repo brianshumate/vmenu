@@ -28,7 +28,10 @@ files = '\.swift$'
 id = "swift-build"
 name = "swift build"
 language = "system"
-entry = "swift build"
+# Build with complete concurrency checking so data-race / Sendable errors
+# that the CI toolchain enforces are caught locally before pushing, rather
+# than only surfacing in CI on a newer/stricter Swift toolchain.
+entry = "swift build -Xswiftc -strict-concurrency=complete"
 pass_filenames = false
 always_run = true
 
