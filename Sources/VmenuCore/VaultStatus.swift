@@ -6,7 +6,7 @@ import Foundation
 ///
 /// This endpoint does not require authentication and returns all fields
 /// that `vault status` displays.
-public struct SealStatusResponse: Codable, Equatable {
+public struct SealStatusResponse: Codable, Equatable, Sendable {
   public let type: String
   public let initialized: Bool
   public let sealed: Bool
