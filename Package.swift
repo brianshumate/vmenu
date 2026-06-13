@@ -49,7 +49,10 @@ let package = Package(
         "scripts",
         "version.txt"
       ] + optionalExcludes,
-      sources: ["vmenu.swift", "StatusViews.swift", "VmenuViews.swift", "HelperDiagnostics.swift"]
+      sources: [
+        "vmenu.swift", "StatusViews.swift", "VmenuViews.swift", "HelperDiagnostics.swift",
+        "Clipboard.swift"
+      ]
     ),
     .executableTarget(
       name: "vmenu-helper",
