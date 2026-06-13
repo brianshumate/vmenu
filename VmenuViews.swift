@@ -622,39 +622,68 @@ extension VaultMenuView {
   }
 
   func sealStatusPill(sealed: Bool) -> some View {
-    HStack(spacing: 3) {
-      Image(systemName: sealed ? "lock.fill" : "lock.open.fill")
+    // The pill doubles as a toggle: clicking it seals an unsealed Vault and
+    // unseals a sealed one.  It's only actionable when the corresponding
+    // credential is available (root token to seal, unseal key to unseal) and
+    // no seal/unseal operation is already in flight.
+    let canToggle =
+      vaultManager.isRunning
+      && vaultManager.isVaultAvailable
+      && !vaultManager.isTogglingSeal
+      && (sealed ? !vaultManager.unsealKey.isEmpty : !vaultManager.vaultToken.isEmpty)
+
+    return Button {
+      vaultManager.toggleSeal()
+    } label: {
+      HStack(spacing: 3) {
+        if vaultManager.isTogglingSeal {
+          ProgressView()
+            .controlSize(.mini)
+            .accessibilityHidden(true)
+        } else {
+          Image(systemName: sealed ? "lock.fill" : "lock.open.fill")
+            .font(.caption2)
+            .symbolReplaceTransition()
+            .accessibilityHidden(true)
+        }
+        Text(
+          sealed
+            ? String(localized: "Sealed", comment: "Vault seal status — data is locked")
+            : String(
+              localized: "Unsealed", comment: "Vault seal status — data is accessible")
+        )
         .font(.caption2)
-        .symbolReplaceTransition()
-        .accessibilityHidden(true)
-      Text(
-        sealed
-          ? String(localized: "Sealed", comment: "Vault seal status — data is locked")
-          : String(
-            localized: "Unsealed", comment: "Vault seal status — data is accessible")
+        .fontWeight(.medium)
+      }
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background(
+        Capsule()
+          .fill(
+            reduceTransparency
+              ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
+              : AnyShapeStyle(.ultraThinMaterial))
       )
-      .font(.caption2)
-      .fontWeight(.medium)
+      .contentShape(Capsule())
     }
-    .foregroundStyle(.secondary)
-    .padding(.horizontal, 7)
-    .padding(.vertical, 3)
-    .background(
-      Capsule()
-        .fill(
-          reduceTransparency
-            ? AnyShapeStyle(Color(nsColor: .quaternaryLabelColor))
-            : AnyShapeStyle(.ultraThinMaterial))
-    )
+    .buttonStyle(.plain)
+    .disabled(!canToggle)
     .help(
       sealed
         ? String(
           localized:
-            "Vault is sealed — its data is encrypted and inaccessible until unsealed",
-          comment: "Tooltip explaining sealed state")
+            "Vault is sealed — its data is encrypted and inaccessible. Click to unseal.",
+          comment: "Tooltip explaining sealed state and the click-to-unseal action")
         : String(
-          localized: "Vault is unsealed — its data is decrypted and ready for use",
-          comment: "Tooltip explaining unsealed state"))
+          localized: "Vault is unsealed — its data is decrypted and ready for use. Click to seal.",
+          comment: "Tooltip explaining unsealed state and the click-to-seal action"))
+    .accessibilityLabel(
+      sealed
+        ? String(localized: "Vault sealed. Activate to unseal.",
+          comment: "VoiceOver label for the seal toggle when sealed")
+        : String(localized: "Vault unsealed. Activate to seal.",
+          comment: "VoiceOver label for the seal toggle when unsealed"))
   }
 
   var controlSection: some View {

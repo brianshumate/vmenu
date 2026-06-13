@@ -157,6 +157,46 @@ final class VaultHTTPClient: NSObject, URLSessionDelegate, @unchecked Sendable {
     }
   }
 
+  /// Seal Vault via the HTTP API.
+  ///
+  /// Calls `PUT /v1/sys/seal` with the root token in the `X-Vault-Token`
+  /// header.  Vault replies with `204 No Content` on success.  Throws on
+  /// any non-2xx response or transport error.
+  func seal(addr: String, token: String) async throws {
+    guard let url = URL(string: "\(addr)/v1/sys/seal") else {
+      throw URLError(.badURL)
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = "PUT"
+    request.setValue(token, forHTTPHeaderField: "X-Vault-Token")
+    let (_, response) = try await session.data(for: request)
+    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+      throw URLError(.badServerResponse)
+    }
+  }
+
+  /// Unseal Vault via the HTTP API.
+  ///
+  /// Calls `PUT /v1/sys/unseal` (unauthenticated) with the unseal key in
+  /// the request body and decodes the resulting `SealStatusResponse`.  In
+  /// dev mode the key share threshold is 1, so a single call fully unseals
+  /// Vault.  Throws on any non-2xx response or transport error.
+  @discardableResult
+  func unseal(addr: String, key: String) async throws -> SealStatusResponse {
+    guard let url = URL(string: "\(addr)/v1/sys/unseal") else {
+      throw URLError(.badURL)
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = "PUT"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONEncoder().encode(["key": key])
+    let (data, response) = try await session.data(for: request)
+    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+      throw URLError(.badServerResponse)
+    }
+    return try JSONDecoder().decode(SealStatusResponse.self, from: data)
+  }
+
   func urlSession(
     _ session: URLSession,
     didReceive challenge: URLAuthenticationChallenge,
@@ -992,6 +1032,11 @@ class VaultManager {
   var parsedStatus: VaultStatus?
   var isRefreshing = false
 
+  /// `true` while a seal or unseal operation is in flight.  The UI uses this
+  /// to disable the seal toggle and show a transient busy state so the user
+  /// can't fire overlapping operations.
+  var isTogglingSeal = false
+
   /// Indicates the XPC helper is not reachable.
   /// When `true`, the UI should show a warning and recovery options.
   var isHelperUnavailable = false
@@ -1808,6 +1853,62 @@ extension VaultManager {
     }
   }
 
+  /// Toggle Vault's seal state.
+  ///
+  /// When unsealed, seals Vault using the root token; when sealed, unseals
+  /// it using the stored unseal key.  Either way a short settling delay
+  /// follows the operation before the status is refreshed so the displayed
+  /// seal state reflects the result rather than the pre-toggle value.
+  func toggleSeal() {
+    guard isVaultAvailable, isRunning, !vaultAddr.isEmpty else { return }
+    // Don't start a second operation while one is already in flight, and
+    // only act on a known seal state (avoid toggling from `.unknown`).
+    guard !isTogglingSeal else { return }
+
+    let addr = vaultAddr
+    switch sealState {
+    case .unsealed:
+      guard !vaultToken.isEmpty else {
+        logger.warning("Cannot seal Vault — no token available")
+        return
+      }
+      let token = vaultToken
+      isTogglingSeal = true
+      Task {
+        do {
+          try await httpClient.seal(addr: addr, token: token)
+        } catch {
+          logger.error("Failed to seal Vault: \(error.localizedDescription, privacy: .public)")
+        }
+        // Brief settle so Vault finishes transitioning before we re-read.
+        try? await Task.sleep(nanoseconds: 750_000_000)
+        isTogglingSeal = false
+        refreshStatus()
+      }
+
+    case .sealed:
+      guard !unsealKey.isEmpty else {
+        logger.warning("Cannot unseal Vault — no unseal key available")
+        return
+      }
+      let key = unsealKey
+      isTogglingSeal = true
+      Task {
+        do {
+          try await httpClient.unseal(addr: addr, key: key)
+        } catch {
+          logger.error("Failed to unseal Vault: \(error.localizedDescription, privacy: .public)")
+        }
+        try? await Task.sleep(nanoseconds: 750_000_000)
+        isTogglingSeal = false
+        refreshStatus()
+      }
+
+    case .unknown:
+      logger.warning("Cannot toggle seal — seal state is unknown")
+    }
+  }
+
   func fetchStatus() {
     guard isVaultAvailable, !vaultAddr.isEmpty else { return }
 
@@ -1818,73 +1919,6 @@ extension VaultManager {
       parsedStatus = parsed
       showStatusWindow()
     }
-  }
-}
-
-// MARK: - Clipboard Utility
-
-/// Pasteboard type that signals clipboard managers to skip recording
-/// this item.
-///
-/// This is the `org.nspasteboard.ConcealedType` convention adopted by
-/// 1Password, iTerm2, Strongbox, and other macOS apps that copy
-/// secrets.  When a clipboard manager sees this type on a pasteboard
-/// item it should treat the contents as ephemeral / sensitive and not
-/// persist them in history.
-///
-/// Reference: https://nspasteboard.org
-private let concealedPasteboardType = NSPasteboard.PasteboardType(
-  "org.nspasteboard.ConcealedType"
-)
-
-/// Copy text to the system clipboard.
-///
-/// When `autoExpire` is `true`:
-/// - The `org.nspasteboard.ConcealedType` marker is added to the
-///   pasteboard item so that clipboard managers (1Password, Maccy,
-///   Paste, etc.) that respect the convention will not record the
-///   value in their history.
-/// - The clipboard is automatically cleared after 10 seconds if it
-///   still contains the copied value.  This limits the window during
-///   which other applications can read the secret via `NSPasteboard`.
-///
-/// Note: both protections are *best-effort*, not a strong guarantee.  The
-/// concealed marker only defends against clipboard managers that honor the
-/// convention, and the 10-second clear is racy against any process that
-/// reads the pasteboard before it fires.  This is inherent to `NSPasteboard`
-/// (any process can read the general pasteboard at any time) and acceptable
-/// for a dev-mode secret, but it should not be mistaken for secure storage.
-///
-/// Shared implementation used by both `VaultMenuView` and
-/// `StatusPopoverView` to avoid duplicated clipboard logic.
-func copyToClipboard(_ text: String, autoExpire: Bool = false) {
-  NSPasteboard.general.clearContents()
-  NSPasteboard.general.setString(text, forType: .string)
-
-  if autoExpire {
-    // Mark the item as concealed so clipboard managers skip it.
-    NSPasteboard.general.setString("", forType: concealedPasteboardType)
-
-    let changeCount = NSPasteboard.general.changeCount
-    DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-      if NSPasteboard.general.changeCount == changeCount {
-        NSPasteboard.general.clearContents()
-      }
-    }
-  }
-}
-extension NSView {
-  /// Recursively search the view hierarchy for an NSStatusBarButton.
-  fileprivate func findStatusBarButton() -> NSStatusBarButton? {
-    if let button = self as? NSStatusBarButton {
-      return button
-    }
-    for subview in subviews {
-      if let found = subview.findStatusBarButton() {
-        return found
-      }
-    }
-    return nil
   }
 }
 
