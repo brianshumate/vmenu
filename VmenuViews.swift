@@ -65,7 +65,7 @@ struct EnvCopyRowButton: View {
   @State private var isHovered = false
   @State private var isRevealed = false
 
-  /// The text shown in the value line — masked or plain.
+  /// The text shown in the value line; masked or plain.
   private var displayValue: String {
     if isSensitive && !isRevealed {
       return String(repeating: "•", count: min(value.count, 32))
@@ -501,13 +501,13 @@ struct VaultMenuView: View {
       switch displayState {
       case .stopped:
         return String(
-          localized: "Stopped", comment: "Vault server state label — not running")
+          localized: "Stopped", comment: "Vault server state label: not running")
       case .sealed:
         return String(
-          localized: "Sealed", comment: "Vault server state label — running but sealed")
+          localized: "Sealed", comment: "Vault server state label: running but sealed")
       case .running:
         return String(
-          localized: "Running", comment: "Vault server state label — running and unsealed"
+          localized: "Running", comment: "Vault server state label: running and unsealed"
         )
       }
     }()
@@ -648,9 +648,9 @@ extension VaultMenuView {
         }
         Text(
           sealed
-            ? String(localized: "Sealed", comment: "Vault seal status — data is locked")
+            ? String(localized: "Sealed", comment: "Vault seal status: data is locked")
             : String(
-              localized: "Unsealed", comment: "Vault seal status — data is accessible")
+              localized: "Unsealed", comment: "Vault seal status: data is accessible")
         )
         .font(.caption2)
         .fontWeight(.medium)
@@ -673,10 +673,10 @@ extension VaultMenuView {
       sealed
         ? String(
           localized:
-            "Vault is sealed — its data is encrypted and inaccessible. Click to unseal.",
+            "Vault is sealed; its data is encrypted and inaccessible. Click to unseal.",
           comment: "Tooltip explaining sealed state and the click-to-unseal action")
         : String(
-          localized: "Vault is unsealed — its data is decrypted and ready for use. Click to seal.",
+          localized: "Vault is unsealed; its data is decrypted and ready for use. Click to seal.",
           comment: "Tooltip explaining unsealed state and the click-to-seal action"))
     .accessibilityLabel(
       sealed
@@ -822,7 +822,7 @@ extension VaultMenuView {
 
 struct AboutView: View {
   // The version is sourced solely from Info.plist (stamped at build time
-  // from `version.txt` / the git tag — see `scripts/bump-version.sh` and
+  // from `version.txt` / the git tag; see `scripts/bump-version.sh` and
   // `scripts/build-app.sh`).  A neutral placeholder is used when the
   // Info.plist is unavailable (e.g. a bare `swift run` without a bundle)
   // so a stale literal can never drift from the real version.
@@ -952,7 +952,7 @@ func makeVaultMenuBarImage(state: VaultDisplayState = .stopped) -> NSImage {
     NSColor.labelColor.setStroke()
     path.stroke()
 
-    // Filled dot at the triangle's visual centroid — color-coded by state:
+    // Filled dot at the triangle's visual centroid; color-coded by state:
     //   stopped → red   sealed → orange   running → green
     let dotRadius: CGFloat = 2.0
     let inset: CGFloat = 3.0
