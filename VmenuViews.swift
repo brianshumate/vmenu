@@ -2,6 +2,40 @@ import AppKit
 import SwiftUI
 import VmenuCore
 
+// MARK: - Visual Effect Background
+
+/// A translucent menu surface whose `NSVisualEffectView.state` is pinned to
+/// `.active`.
+///
+/// `MenuBarExtra(.window)` backs its popover with a SwiftUI-managed
+/// `NSVisualEffectView` that uses `behindWindow` blending.  When the popover
+/// resigns key (the user clicks elsewhere) and is reopened, AppKit can leave
+/// that effect view in the `.inactive` state.  A `behindWindow` effect view in
+/// the inactive state stops compositing vibrancy and renders fully transparent,
+/// so the windows behind the popover bleed through — and it stays that way
+/// until the window is recreated.
+///
+/// Painting our own effect view, with `state` re-asserted to `.active` on every
+/// update, guarantees the menu always has an opaque, stable surface regardless
+/// of the popover window's key state.  This mirrors the status window, which
+/// already constructs its background this way (see `showStatusWindow`).
+struct MenuVisualEffectBackground: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSVisualEffectView {
+    let view = NSVisualEffectView()
+    view.material = .menu
+    view.blendingMode = .behindWindow
+    view.state = .active
+    return view
+  }
+
+  func updateNSView(_ view: NSVisualEffectView, context: Context) {
+    // Re-assert `.active` — AppKit flips this to `.inactive` when the popover
+    // loses key focus, which is the exact transition that produced the
+    // transparent-menu artifact.
+    view.state = .active
+  }
+}
+
 // MARK: - Symbol Effect Helpers
 
 /// Applies `.contentTransition(.symbolEffect(.replace))` for animated
@@ -259,6 +293,12 @@ struct VaultMenuView: View {
       }
     }
     .frame(minWidth: 320, idealWidth: 360)
+    // Paint a stable, always-active visual-effect surface behind the menu.
+    // Without this the MenuBarExtra popover's own effect view can get stuck
+    // in `.inactive` after losing key focus and render transparent (the
+    // partially-transparent menu bug). `ignoresSafeArea` lets it bleed to the
+    // popover edges instead of leaving an inset border.
+    .background(MenuVisualEffectBackground().ignoresSafeArea())
     // The menu popover is only on screen while open, so drive the faster
     // status-refresh cadence for its lifetime and let it pause when closed.
     .onAppear { vaultManager.beginFastRefresh() }
