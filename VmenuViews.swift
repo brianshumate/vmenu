@@ -14,21 +14,15 @@ extension View {
 
 struct MenuRowButton: View {
   let title: String
-  let icon: String
   var shortcut: String? = nil
   let action: () -> Void
 
-  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 20
   @State private var isHovered = false
   @Environment(\.isEnabled) private var isEnabled
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: 8) {
-        Image(systemName: icon)
-          .font(.caption)
-          .frame(width: iconWidth)
-          .accessibilityHidden(true)
         Text(title)
           .font(.body)
         Spacer()
@@ -68,7 +62,6 @@ struct EnvCopyRowButton: View {
   @Binding var copyFeedback: String?
   let action: () -> Void
 
-  @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 20
   @State private var isHovered = false
   @State private var isRevealed = false
 
@@ -84,15 +77,6 @@ struct EnvCopyRowButton: View {
     HStack(spacing: 8) {
       Button(action: action) {
         HStack(spacing: 8) {
-          Image(systemName: "doc.on.clipboard")
-            .font(.caption)
-            .foregroundStyle(
-              isHovered
-                ? AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
-                : AnyShapeStyle(Color.accentColor)
-            )
-            .frame(width: iconWidth)
-            .accessibilityHidden(true)
           VStack(alignment: .leading, spacing: 1) {
             Text(label)
               .font(.caption)
@@ -409,7 +393,6 @@ struct VaultMenuView: View {
         menuButton(
           title: String(
             localized: "Quit vmenu", comment: "Menu button to quit the application"),
-          icon: "xmark.circle.fill",
           shortcut: "⌘Q"
         ) {
           NSApplication.shared.terminate(nil)
@@ -682,7 +665,6 @@ extension VaultMenuView {
             localized: "Stop Server", comment: "Menu button to stop the Vault server")
           : String(
             localized: "Start Server", comment: "Menu button to start the Vault server"),
-        icon: vaultManager.isRunning ? "stop.fill" : "play.fill",
         shortcut: "⌘S"
       ) {
         if vaultManager.isRunning {
@@ -696,7 +678,6 @@ extension VaultMenuView {
       menuButton(
         title: String(
           localized: "Restart Server", comment: "Menu button to restart the Vault server"),
-        icon: "arrow.clockwise.circle.fill",
         shortcut: "⌘R"
       ) {
         vaultManager.restartVault()
@@ -708,7 +689,6 @@ extension VaultMenuView {
           localized: "Show Server Details",
           comment: "Menu button to open the status window"
         ),
-        icon: "chart.bar.doc.horizontal.fill",
         shortcut: "⌘I"
       ) {
         vaultManager.fetchStatus()
@@ -770,8 +750,7 @@ extension VaultMenuView {
     VStack(spacing: 2) {
       menuButton(
         title: String(
-          localized: "About vmenu", comment: "Menu button to open the About window"),
-        icon: "info.circle.fill"
+          localized: "About vmenu", comment: "Menu button to open the About window")
       ) {
         VaultManager.shared.showAboutWindow()
       }
@@ -780,15 +759,13 @@ extension VaultMenuView {
         menuButton(
           title: vaultManager.isVerboseLoggingEnabled
             ? String(localized: "Disable Verbose Logging", comment: "Menu button to disable verbose helper logging")
-            : String(localized: "Enable Verbose Logging", comment: "Menu button to enable verbose helper logging"),
-          icon: "text.magnifyingglass"
+            : String(localized: "Enable Verbose Logging", comment: "Menu button to enable verbose helper logging")
         ) {
           vaultManager.toggleVerboseLogging()
         }
         menuButton(
           title: String(
-            localized: "Copy Diagnostics", comment: "Menu button to copy helper diagnostics to clipboard"),
-          icon: "doc.on.clipboard"
+            localized: "Copy Diagnostics", comment: "Menu button to copy helper diagnostics to clipboard")
         ) {
           vaultManager.runDiagnosticsAndCopy()
         }
@@ -796,7 +773,6 @@ extension VaultMenuView {
       menuButton(
         title: String(
           localized: "Quit vmenu", comment: "Menu button to quit the application"),
-        icon: "xmark.circle.fill",
         shortcut: "⌘Q"
       ) {
         NSApplication.shared.terminate(nil)
@@ -808,11 +784,10 @@ extension VaultMenuView {
 
   func menuButton(
     title: String,
-    icon: String,
     shortcut: String? = nil,
     action: @escaping () -> Void
   ) -> some View {
-    MenuRowButton(title: title, icon: icon, shortcut: shortcut, action: action)
+    MenuRowButton(title: title, shortcut: shortcut, action: action)
   }
 }
 
