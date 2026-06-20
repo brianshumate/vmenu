@@ -36,6 +36,64 @@ struct MenuVisualEffectBackground: NSViewRepresentable {
   }
 }
 
+// MARK: - Popover Window Fixer
+
+/// Repairs two AppKit shortcomings of the `MenuBarExtra(.window)` popover that
+/// together produce the "transparent / blended sections" bug.
+///
+/// 1. **The panel never shrinks.** The native window-style `MenuBarExtra` grows
+///    its panel to fit content but never shrinks it again.  So after the menu is
+///    first shown tall (Vault running: header + address + env rows), stopping
+///    the server leaves a short menu centred inside a stale, oversized panel —
+///    with empty bands above and below it.
+///
+/// 2. **The panel's own effect view goes transparent.** Those empty bands are
+///    outside the SwiftUI content (and therefore outside
+///    `MenuVisualEffectBackground`), so they are painted only by the popover's
+///    AppKit-managed `NSVisualEffectView`, which gets stuck `.inactive` once the
+///    popover has resigned key — and a `behindWindow` effect view in the
+///    inactive state renders fully transparent, letting the desktop bleed
+///    through.
+///
+/// This zero-size representable reaches the hosting popover window on every
+/// update and (a) pins *every* `NSVisualEffectView` in the window to `.active`
+/// so no region can render transparent, and (b) resizes the panel to its
+/// content's fitting height, keeping the top edge fixed so it stays anchored
+/// under the menu bar.  Resizing is a no-op once the panel already fits, so this
+/// settles immediately rather than looping.
+struct MenuPopoverWindowFixer: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSView {
+    NSView(frame: .zero)
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {
+    // Defer to the next run-loop pass: during `updateNSView` the view may not
+    // yet be in a window, and AppKit dislikes frame mutations mid-layout.
+    DispatchQueue.main.async {
+      guard let window = nsView.window else { return }
+
+      // (2) Keep every effect view in the popover opaque, including the
+      // AppKit-managed one that paints any region not covered by content.
+      window.contentView?.pinVisualEffectStatesActive()
+
+      // (1) Shrink (or grow) the panel to fit its content, anchored at the top.
+      guard let host = nsView.enclosingHostingView() else { return }
+      let fittingHeight = host.fittingSize.height
+      guard fittingHeight > 1 else { return }
+
+      let frame = window.frame
+      guard abs(frame.height - fittingHeight) > 0.5 else { return }
+
+      var newFrame = frame
+      newFrame.size.height = fittingHeight
+      // Keep the top edge fixed (AppKit origin is bottom-left) so the popover
+      // stays pinned beneath the status item instead of drifting downward.
+      newFrame.origin.y = frame.maxY - fittingHeight
+      window.setFrame(newFrame, display: true, animate: false)
+    }
+  }
+}
+
 // MARK: - Symbol Effect Helpers
 
 /// Applies `.contentTransition(.symbolEffect(.replace))` for animated
@@ -299,6 +357,11 @@ struct VaultMenuView: View {
     // partially-transparent menu bug). `ignoresSafeArea` lets it bleed to the
     // popover edges instead of leaving an inset border.
     .background(MenuVisualEffectBackground().ignoresSafeArea())
+    // Resize the popover to fit its content and keep every effect view opaque.
+    // The native window-style MenuBarExtra panel grows but never shrinks, which
+    // leaves a short menu (Vault stopped) centred in a stale, oversized panel
+    // whose uncovered bands render transparent. See `MenuPopoverWindowFixer`.
+    .background(MenuPopoverWindowFixer())
     // The menu popover is only on screen while open, so drive the faster
     // status-refresh cadence for its lifetime and let it pause when closed.
     .onAppear { vaultManager.beginFastRefresh() }

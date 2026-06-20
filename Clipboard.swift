@@ -66,4 +66,40 @@ extension NSView {
     }
     return nil
   }
+
+  /// Pin this view and all of its descendant `NSVisualEffectView`s to the
+  /// `.active` state.
+  ///
+  /// A `behindWindow` effect view in the `.inactive` state stops compositing
+  /// vibrancy and renders fully transparent.  AppKit flips the popover's own
+  /// effect view to `.inactive` once it resigns key, which is what lets the
+  /// desktop bleed through the menu.  Re-asserting `.active` keeps every region
+  /// opaque.  See `MenuPopoverWindowFixer`.
+  func pinVisualEffectStatesActive() {
+    if let effectView = self as? NSVisualEffectView {
+      effectView.state = .active
+    }
+    for subview in subviews {
+      subview.pinVisualEffectStatesActive()
+    }
+  }
+
+  /// The outermost `NSHostingView` ancestor of this view, i.e. the SwiftUI
+  /// content host for the enclosing window.
+  ///
+  /// Walks the superview chain and returns the last hosting view found, which
+  /// is the root host whose `fittingSize` reflects the whole SwiftUI tree.
+  /// Matched by class name because `NSHostingView` is generic and has no
+  /// non-generic base class to test against.
+  func enclosingHostingView() -> NSView? {
+    var result: NSView?
+    var view: NSView? = self
+    while let current = view {
+      if String(describing: type(of: current)).contains("HostingView") {
+        result = current
+      }
+      view = current.superview
+    }
+    return result
+  }
 }
