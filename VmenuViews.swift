@@ -106,11 +106,28 @@ extension View {
 
 struct MenuRowButton: View {
   let title: String
-  var shortcut: String? = nil
+  /// The key that, combined with `modifiers`, triggers the button. The on-screen
+  /// shortcut glyph is derived from these so the hint can never drift from the
+  /// binding that actually fires the action.
+  var key: KeyEquivalent? = nil
+  var modifiers: EventModifiers = .command
   let action: () -> Void
 
   @State private var isHovered = false
   @Environment(\.isEnabled) private var isEnabled
+
+  /// Human-readable glyph (e.g. "⌘S") for the trailing hint, or `nil` when the
+  /// row has no keyboard shortcut.
+  private var shortcutLabel: String? {
+    guard let key else { return nil }
+    var label = ""
+    if modifiers.contains(.control) { label += "⌃" }
+    if modifiers.contains(.option) { label += "⌥" }
+    if modifiers.contains(.shift) { label += "⇧" }
+    if modifiers.contains(.command) { label += "⌘" }
+    label += String(key.character).uppercased()
+    return label
+  }
 
   var body: some View {
     Button(action: action) {
@@ -118,8 +135,8 @@ struct MenuRowButton: View {
         Text(title)
           .font(.body)
         Spacer()
-        if let shortcut {
-          Text(shortcut)
+        if let shortcutLabel {
+          Text(shortcutLabel)
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -139,6 +156,7 @@ struct MenuRowButton: View {
     }
     .buttonStyle(.plain)
     .focusable(false)
+    .keyboardShortcut(key.map { KeyboardShortcut($0, modifiers: modifiers) })
     .opacity(isEnabled ? 1.0 : 0.4)
     .onHover { hovering in
       isHovered = hovering
@@ -496,7 +514,7 @@ struct VaultMenuView: View {
         menuButton(
           title: String(
             localized: "Quit vmenu", comment: "Menu button to quit the application"),
-          shortcut: "⌘Q"
+          key: "q"
         ) {
           NSApplication.shared.terminate(nil)
         }
@@ -797,7 +815,7 @@ extension VaultMenuView {
             localized: "Stop Server", comment: "Menu button to stop the Vault server")
           : String(
             localized: "Start Server", comment: "Menu button to start the Vault server"),
-        shortcut: "⌘S"
+        key: "s"
       ) {
         if vaultManager.isRunning {
           vaultManager.stopVault()
@@ -810,7 +828,7 @@ extension VaultMenuView {
       menuButton(
         title: String(
           localized: "Restart Server", comment: "Menu button to restart the Vault server"),
-        shortcut: "⌘R"
+        key: "r"
       ) {
         vaultManager.restartVault()
       }
@@ -821,7 +839,7 @@ extension VaultMenuView {
           localized: "Show Server Details",
           comment: "Menu button to open the status window"
         ),
-        shortcut: "⌘I"
+        key: "i"
       ) {
         vaultManager.fetchStatus()
       }
@@ -905,7 +923,7 @@ extension VaultMenuView {
       menuButton(
         title: String(
           localized: "Quit vmenu", comment: "Menu button to quit the application"),
-        shortcut: "⌘Q"
+        key: "q"
       ) {
         NSApplication.shared.terminate(nil)
       }
@@ -916,10 +934,11 @@ extension VaultMenuView {
 
   func menuButton(
     title: String,
-    shortcut: String? = nil,
+    key: KeyEquivalent? = nil,
+    modifiers: EventModifiers = .command,
     action: @escaping () -> Void
   ) -> some View {
-    MenuRowButton(title: title, shortcut: shortcut, action: action)
+    MenuRowButton(title: title, key: key, modifiers: modifiers, action: action)
   }
 }
 
