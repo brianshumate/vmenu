@@ -18,7 +18,10 @@
 
 ---
 
-**vmenu** lives in your menu bar and gives you one-click control over a [Vault](https://www.vaultproject.io/) dev mode server. Start, stop, restart, check status, and copy environment variables, all without ever opening your terminal.
+**vmenu** lives in your menu bar and gives you one-click control over a
+[Vault](https://www.vaultproject.io/) dev mode server. Start, stop, restart,
+check status, and copy environment variables, all without ever opening
+your terminal.
 
 ## Screenshots
 
@@ -35,40 +38,53 @@
 
 ## Features
 
-Though **vmenu** is just a cute and small menu bar app, it packs a lot of thoughtful features into a minimal surface area. Here are some of the things you can do:
+Though **vmenu** is just a cute and small menu bar app, it packs a lot of
+thoughtful features into a minimal surface area. Here are some of the things
+you can do:
 
 - **Start/stop/restart** a Vault dev server with a click or keyboard shortcut.
-- **Server readiness menu bar icon indicator**: green (unsealed), orange (sealed), red (stopped).
-- **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export commands for Terminal session use. You can also copy or view the initial root token value right from the menu.
-- **Server status at a glance**: Vault version, seal status, storage backend, address, and unseal key along with raw status output.
-- **macOS-native**: pure SwiftUI, lightweight, no Electron, no runtime dependencies.
-- **Fully sandboxed**: the main app runs inside the App Sandbox; privileged operations are delegated to an unsandboxed XPC helper via `SMAppService`.
+- **Server readiness menu bar icon indicator**: green (unsealed), orange
+  (sealed), red (stopped).
+- **One-click copy** of `VAULT_ADDR`, `VAULT_CACERT`, and `VAULT_TOKEN` export
+  commands for Terminal session use. You can also copy or view the initial root
+  token value right from the menu.
+- **Server status at a glance**: Vault version, seal status, storage backend,
+  address, and unseal key along with raw status output.
+- **macOS-native**: pure SwiftUI, lightweight, no Electron, no runtime
+  dependencies.
+- **Fully sandboxed**: the main app runs inside the App Sandbox; privileged
+  operations are delegated to an un-sandboxed XPC helper via `SMAppService`.
 - **launchd integration**: manages Vault through a proper LaunchAgent.
 - **Keyboard shortcuts** for every menu action (⌘S, ⌘R, ⌘I, ⌘Q).
 
 ### Menu bar icon
 
-The menu bar icon has a colored dot in the center that reflects one of these possible Vault server states:
+The menu bar icon has a colored dot in the center that reflects one of these
+possible Vault server states:
 
-| Icon | State |
-|---|---|
-| 🟢 Green | Vault is unsealed and ready for use. |
-| 🟠 Orange | Vault is sealed and not available for use until unsealed. |
-| 🔴 Red | Vault is stopped and not available for use. |
+| Icon      | State                                                           |
+|-----------|-----------------------------------------------------------------|
+| 🟢 Green  | Vault is started, unsealed, and ready for use.                  |
+| 🟠 Orange | Vault is started, sealed and unavailable to use until unsealed. |
+| 🔴 Red    | Vault is stopped and unavailable for use.                       |
 
 ### Logs
 
-A Vault dev mode server managed with **vmenu** writes to 2 log files under your home folder at these paths:
+A Vault dev mode server managed with **vmenu** writes to 2 log files under your
+home folder at these paths:
 
 - `$HOME/Library/Logs/vmenu/vault.startup.log`
 - `$HOME/Library/Logs/vmenu/vault.operations.log`
 
 > [!TIP]
-> The `vault.operations.log` contains useful details written when you actually use Vault, whereas the `vault.startup.log` contains just the server startup information.
+> The `vault.operations.log` contains useful details written when you actually
+> use Vault, whereas the `vault.startup.log` contains just the server startup
+> information.
 
 ## Prerequisites
 
-- **vmenu** requires **macOS 14 (Sonoma) or later** and is tested on macOS 26 (Tahoe).
+- **vmenu** requires **macOS 14 (Sonoma) or later** and is tested on
+  macOS 26 (Tahoe).
 
 - **vmenu** needs the `vault` binary installed and available in your `PATH`.
 
@@ -78,21 +94,27 @@ If you do not have Vault, you can install the binary with Homebrew:
 brew install hashicorp/tap/vault
 ```
 
-If you do not use Homebrew, consider downloading a binary directly from [releases.hashicorp.com/vault](https://releases.hashicorp.com/vault), and installing in your PATH using your preferred method.
+If you do not use Homebrew, consider downloading a binary directly from
+[releases.hashicorp.com/vault](https://releases.hashicorp.com/vault), and
+installing in your PATH using your preferred method.
 
 ## Install
 
-### Download a release (recommended)
+### Download a release
 
-Grab the latest DMG or zip from [**Releases**](https://github.com/brianshumate/vmenu/releases/latest), open the DMG, and drag `vmenu.app` into `/Applications`.
+Grab the latest DMG or zip from
+[**Releases**](https://github.com/brianshumate/vmenu/releases/latest), open the
+DMG, and drag `vmenu.app` into `/Applications`.
 
 > [!NOTE]
 > Release builds from GitHub Actions are signed and notarized.
-> If macOS still shows a Gatekeeper warning, right-click the app and choose **Open**, or go to **System Settings → Privacy & Security** and click **Open Anyway**.
+> If macOS still shows a Gatekeeper warning, right-click the app and choose
+> **Open**, or go to **System Settings → Privacy & Security** and click
+> **Open Anyway**.
 
 ### Build from source
 
-Build both the main app and XPC helper
+Build both the main app and XPC helper.
 
 ```shell
 swift build -c release
@@ -111,7 +133,10 @@ cp -r vmenu.app /Applications/
 ```
 
 > [!NOTE]
-> The XPC helper agent (`com.brianshumate.vmenu.helper`) requires a properly assembled `.app` bundle so that `SMAppService` can find its LaunchAgent plist at `Contents/Library/LaunchAgents/`. Use `./scripts/build-app.sh` to produce a complete bundle.
+> The XPC helper agent (`com.brianshumate.vmenu.helper`) requires a properly
+> assembled `.app` bundle so that `SMAppService` can find its LaunchAgent plist
+> at `Contents/Library/LaunchAgents/`. Use `./scripts/build-app.sh` to produce
+> a complete bundle.
 
 ## Run tests
 
@@ -137,36 +162,49 @@ export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"; \
 ./scripts/build-app.sh release sign
 ```
 
-The build script signs both the XPC helper and the main binary with the same identity. The helper is signed first (inner component before outer bundle) with its own entitlements (`vmenuhelper/vmenuhelper.entitlements`).
+The build script signs both the XPC helper and the main binary with the same
+identity. The helper is signed first (inner component before outer bundle)
+with its own entitlements (`vmenuhelper/vmenuhelper.entitlements`).
 
-The build script reads the latest git tag (e.g. `v1.5`) and stamps it into `CFBundleShortVersionString` and `CFBundleVersion`. If no tag exists, the version defaults to the value already in `vmenu/Info.plist`.
+The build script reads the latest git tag (e.g. `v1.5`) and stamps it into
+`CFBundleShortVersionString` and `CFBundleVersion`. If no tag exists, the
+version defaults to the value already in `vmenu/Info.plist`.
 
 </details>
 
 ## How it works and technical details
 
-**vmenu** is a menu-bar-only app (`LSUIElement = true`), so it has no Dock icon or main window.
+**vmenu** is a menu-bar-only app (`LSUIElement = true`), so it has no Dock
+icon or main window.
 
 ### Architecture
 
-The app uses a two-process architecture for separation of concerns and defense in depth.
+The app uses a two-process architecture for separation of concerns and
+defense in depth.
 
 | Component | Binary | Sandbox | Role |
 |---|---|---|---|
 | **Main app** | vmenu | Sandboxed | UI, Vault HTTP API polling, clipboard |
 | **XPC helper** | com.brianshumate.vmenu.helper | Unsandboxed | launchctl, plist/log file I/O, vault binary discovery |
 
-The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice) at launch. launchd starts the helper on demand when the main app connects to its Mach service over XPC.
+The main app registers the helper agent via [`SMAppService.agent(plistName:)`](https://developer.apple.com/documentation/servicemanagement/smappservice)
+at launch. launchd starts the helper on demand when the main app connects to
+its Mach service over XPC.
 
-The helper manages the Vault dev server through a LaunchAgent plist at `~/Library/LaunchAgents/com.hashicorp.vault.plist`, using `launchctl bootstrap`/`bootout`/`kickstart` sub-commands.
+The helper manages the Vault dev server through a LaunchAgent plist at
+`~/Library/LaunchAgents/com.hashicorp.vault.plist`, using
+`launchctl bootstrap`/`bootout`/`kickstart` sub-commands.
 
 The helper's launchd plist is embedded in the app bundle at `Contents/Library/LaunchAgents/com.brianshumate.vmenu.helper.plist`.
 
-The main app communicates with the Vault server directly over HTTPS for status polling (`/v1/sys/seal-status`, `/v1/sys/leader`) without spawning any processes.
+The main app communicates with the Vault server directly over HTTPS for status
+polling (`/v1/sys/seal-status`, `/v1/sys/leader`) without spawning
+any processes.
 
 ### XPC protocol
 
-All operations that the App Sandbox forbids are exposed through the `VmenuHelperProtocol` XPC interface.
+All operations that the App Sandbox forbids are exposed through the
+`VmenuHelperProtocol` XPC interface.
 
 | Method | Operation |
 |---|---|
@@ -180,31 +218,56 @@ All operations that the App Sandbox forbids are exposed through the `VmenuHelper
 
 ## Security model
 
-**vmenu** is for managing a dev mode server, but it still strives to keep security in focus while doing so.
+**vmenu** is for managing a dev mode server, but it still strives to keep
+security in focus while doing so.
 
 The main **vmenu** app runs inside an **App Sandbox**.
 
-Operations that the sandbox forbids, like process spawning (`launchctl`), file I/O outside the container (`~/Library/LaunchAgents/`, `~/Library/Logs/vmenu/`, CA cert files) are delegated to a dedicated XPC helper agent.
+Operations that the sandbox forbids, like process spawning (`launchctl`), file
+I/O outside the container (`~/Library/LaunchAgents/`, `~/Library/Logs/vmenu/`,
+CA cert files) are delegated to a dedicated XPC helper agent.
 
-The entitlements for each component are documented in [`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements) and [`vmenuhelper/vmenuhelper.entitlements`](vmenuhelper/vmenuhelper.entitlements).
+The entitlements for each component are documented in
+[`vmenu/vmenu.entitlements`](vmenu/vmenu.entitlements) and
+[`vmenuhelper/vmenuhelper.entitlements`](vmenuhelper/vmenuhelper.entitlements).
 
-| Component | Sandbox | Entitlements |
-|---|---|---|
-| Main app | Enabled | `network.client` (outbound HTTPS to `127.0.0.1:8200`) |
-| XPC helper | Disabled | Hardened runtime only (no sandbox) |
+| Component  | Sandbox  | Entitlements                                     |
+|------------|----------|--------------------------------------------------|
+| Main app   | Enabled  | `network.client` (HTTPS out to `127.0.0.1:8200`) |
+| XPC helper | Disabled | Hardened runtime only (no sandbox)               |
 
 The app also uses the these defense-in-depth measures:
 
-- **App Sandbox** on the main app restricts filesystem, process, and network access.
+- **App Sandbox** on the main app restricts filesystem, process, and
+  network access.
 - **Hardened Runtime** enabled for both the main app and the XPC helper.
-- **Explicitly disabled unsigned executable memory** and **library validation bypass** in both components.
+- **Explicitly disabled unsigned executable memory** and
+  **library validation bypass** in both components.
 - **Ephemeral `URLSession`** use, so no credentials get cached to disk.
-- **CA certificate path validation** in the helper rejects symlinks, traversal, world-writable directories, and files with unsafe ownership or permissions.
-- **Log file safety**: the helper uses `O_CREAT | O_EXCL` for atomic file creation and validates files are regular (not symlinks) before reading or writing.
-- **XPC connection validation**: the helper validates each incoming XPC connection against a code-signing requirement. Developer ID signed builds enforce the full Apple certificate chain (`anchor apple generic`) and optional Team ID pinning. Ad-hoc signed builds verify only the connecting process's bundle identifier — a self-asserted value — so ad-hoc builds are **dev-only** and rely on the per-user launchd domain (same-user access) for isolation. Ship Developer ID–signed builds for distribution.
-- **XPC isolation**: the helper is registered via `SMAppService.agent` and its Mach service is scoped to the app bundle. The main app invalidates the XPC connection on termination.
-- **Input validation**: values parsed from the Vault startup log are validated before use — `VAULT_ADDR` must be a loopback URL, and the root token and unseal key must match their expected character sets (`[A-Za-z0-9._-]` and the base64 alphabet, respectively), rejecting control characters, whitespace, and shell metacharacters.
-- **Concealed clipboard copies**: secrets copied to the clipboard are marked with `org.nspasteboard.ConcealedType` and cleared after 10 seconds. This is best-effort — it depends on clipboard managers honoring the convention and is racy against fast readers — not a strong guarantee, since any process can read the general pasteboard.
+- **CA certificate path validation** in the helper rejects symlinks, traversal,
+  world-writable directories, and files with unsafe ownership or permissions.
+- **Log file safety**: the helper uses `O_CREAT | O_EXCL` for atomic file
+  creation and validates files are regular (not symlinks) before reading
+  or writing.
+- **XPC connection validation**: the helper validates each incoming XPC
+  connection against a code-signing requirement. Developer ID signed builds
+  enforce the full Apple certificate chain (`anchor apple generic`) and
+  optional Team ID pinning. Ad-hoc signed builds verify only the connecting
+  process's bundle identifier — a self-asserted value — so ad-hoc builds are
+  **dev-only** and rely on the per-user launchd domain (same-user access) for
+  isolation. Ship Developer ID–signed builds for distribution.
+- **XPC isolation**: the helper is registered via `SMAppService.agent` and its
+  Mach service is scoped to the app bundle. The main app invalidates the XPC
+  connection on termination.
+- **Input validation**: values parsed from the Vault startup log are validated
+  before use — `VAULT_ADDR` must be a loopback URL, and the root token and
+  unseal key must match their expected character sets (`[A-Za-z0-9._-]` and the
+  base64 alphabet, respectively), rejecting control characters, whitespace, and
+  shell meta-characters.
+- **Concealed clipboard copies**: secrets copied to the clipboard are marked
+  with `org.nspasteboard.ConcealedType` and cleared after 10 seconds. This is
+  best-effort, and depends on clipboard managers honoring the convention and
+  is not a strong guarantee, since any process can read the general pasteboard.
 
 ## Uninstallation
 
@@ -216,12 +279,16 @@ To completely remove **vmenu** and its associated files:
 
 3. **Remove the LaunchAgents** (run in Terminal):
 
+   Unload and remove the Vault LaunchAgent.
+
    ```shell
-   # Unload and remove the Vault LaunchAgent
    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.hashicorp.vault.plist 2>/dev/null && \
    rm -f ~/Library/LaunchAgents/com.hashicorp.vault.plist
+   ```
 
-   # Unload and disable the vmenu helper LaunchAgent
+   Unload and disable the vmenu helper LaunchAgent
+
+   ```shell
    launchctl bootout gui/$(id -u)/com.brianshumate.vmenu.helper 2>/dev/null
    launchctl disable gui/$(id -u)/com.brianshumate.vmenu.helper 2>/dev/null
    ```
@@ -239,13 +306,21 @@ To completely remove **vmenu** and its associated files:
    ```
 
 > [!NOTE]
-> The Vault dev server generates a temporary CA certificate in `/var/folders/` which macOS automatically cleans up, and so you do not need to manually remove that file.
+> The Vault dev server generates a temporary CA certificate in `/var/folders/`
+> which macOS automatically cleans up, and so you do not need to manually
+> remove that file.
 
 ## Acknowledgments and disclaimers
 
-Thanks to my friends at HashiCorp for inspiring me to build **vmenu**. I hope you also find it useful.
+Thanks to my friends at HashiCorp for inspiring me to build **vmenu**.
+I hope you also find it useful.
 
-**vmenu** is an open source and personal project by [Brian Shumate](https://brianshumate.com/), and is not officially affiliated with Vault or HashiCorp in any way. As a 100% personal project, **vmenu** is not open to any contributions or feedback.
+**vmenu** is an open source and personal project by
+[Brian Shumate](https://brianshumate.com/), and is not officially affiliated
+with Vault or HashiCorp in any way.
+
+As a 100% personal project, **vmenu** is not open to any contributions
+or feedback.
 
 ## AI use disclaimer
 
